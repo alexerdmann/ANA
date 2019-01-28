@@ -735,15 +735,14 @@ class ANA:
     def cell_mapping_and_word_reassignment(self, dist_matrix):
 
         self.assignMedoid_random(dist_matrix)
-
         ### debug secondary eval cell prediction
-        ana.get_cell_wf()
-        cellF_rand = ana.evalFull()
+        self.get_cell_wf()
+        cellF_rand = self.evalFull()
 
-        return self.swapMedoids(dist_matrix)
+        cellMates = self.swapMedoids(dist_matrix)
         ### debug secondary eval cell prediction
-        ana.get_cell_wf()
-        cellF_rand = ana.evalFull()
+        self.get_cell_wf()
+        cellF_swappedMedoids = self.evalFull()
 
 
         ### when medoids swap
@@ -765,7 +764,9 @@ class ANA:
 
         ### inds will be reassigned when ind_fitness improvement outweighs the loss in medoid cohesion
 
-        ### ind_fitness should be a function of the proportion of members whose nearest medoid occupies a feature sharing cell 
+        ### ind_fitness should be a function of the proportion of members whose nearest medoid occupies a feature sharing cell
+
+        return cellMates, cellF_rand, cellF_swappedMedoids
 
 
     def assignMedoid_random(self, dist_matrix):
@@ -977,7 +978,7 @@ class ANA:
                 prec = len(correct) / len(predicted)
                 rec = len(correct) / len(actual)
                 F = 100 * ( (2 * prec * rec) / (prec + rec) )
-                
+
             weight = len(actual)
 
             if F < minF:
@@ -1348,7 +1349,7 @@ if __name__ == '__main__':
 
     ################## MEDOID TO CELL MAPPING AND WF RE-ASSIGNMENT ##################
 
-    cellMates = ana.cell_mapping_and_word_reassignment(dist_matrix)
+    cellMates, cellF_rand, cellF_swappedMedoids = ana.cell_mapping_and_word_reassignment(dist_matrix)
 
     ############################### EVALUATION ######################################
     GOLD_cellMates, GOLD_coordinates_to_forms, GOLD_forms_to_coordinates = get_cellMates(ana.GOLD_array) # pickle these
@@ -1357,6 +1358,10 @@ if __name__ == '__main__':
     ### Secondary evaluation on cell prediction
     # ana.get_cell_wf()
     # cellF_swappedMedoids = ana.evalFull()
+
+
+    print('F-score cell assignment improves from {} to {} after medoid swapping'.format(str(round(cellF_rand, 3)), str(round(cellF_swappedMedoids, 3))))
+    print('\nF-score cell mate clustering (without concern for correct cell assignment): {}'.format(str(round(macroF, 3))))
 
 
 
