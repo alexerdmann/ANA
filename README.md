@@ -14,7 +14,7 @@ For a quick demonstration, the following will learn a weighted Levenshtein dista
 python ANA.py -u Unimorph/deu/deu.sample-N.sample-5000 -d weightedLev
 ```
 
-### options
+### Options
 * *-u* Unimorph file
 * *-d* Distance metric.. interpolated performs the best, which by default interpolates weightedLev with cosine distance
 * *-x* The first distance metric to be interpolated
