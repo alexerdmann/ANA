@@ -46,12 +46,14 @@ class ANA:
 
 
         ### get gold data, feat-dim maps, no-fts data, dimension order
+        print('Reading in gold data and building maps..')
         self.GOLD_lem_wf_lstFtlists = {}
         self.dimOrder = []
         self.lem_wf = {}
         self.GOLD_dim_feats = {}
         self.GOLD_feats_dim = {}
 
+        read_lines = 0
         for line in open(fn):
             line = line.strip('\n')
             if line:
@@ -145,6 +147,7 @@ class ANA:
 
 
         ### get gold array of paradigms
+        print('Mapping paradigms to gold cells..')
         self.GOLD_lem_wf_lstSkelCoordlsts = {}
 
         for lemma in self.GOLD_lem_wf_lstFtlists:
@@ -160,6 +163,7 @@ class ANA:
 
 
         ## integerize everything
+        print('Integerizing data..')
         self.wf_lem = {}
         self.ind_wf = {}
         self.wf_ind = {}
@@ -189,9 +193,9 @@ class ANA:
                 self.ind_wf[ind] = wf
                 self.ind_lem[ind] = lem
 
-
     def get_attested_cells(self):
 
+        print('Attesting cells..')
         ### get all attested coordinates and word classes
         self.allCells = {}
         lemma_coords = {}
@@ -226,23 +230,30 @@ class ANA:
             all_coords = '\n'.join(all_coords)
             self.metaParadigms[all_coords] = True
 
-
+        print('Mapping cells to possible word classes and paradigm mate cells')
         ### map all coordinates to possible wordClasses and possible paradigm mates
-        self.cells_wordClasses = {}
-        self.cell_syncretisms = {}
+        self.cell_metaParadigm = {}
+        self.metaParadigm_cell = {}
+        self.cell_metaParadigmMate = {}
 
         for wc in self.metaParadigms:
+            self.metaParadigm_cell[wc] = {}
             wcList = wc.split('\n')
-            for coordID in range(len(wcList)):
-                cell = wcList[coordID]
-                if cell not in self.cells_wordClasses:
-                    self.cells_wordClasses[cell] = {}
-                    self.cell_syncretisms[cell] = {}
-                self.cells_wordClasses[cell][wc] = True
-                for coordID2 in range(len(wcList)):
-                    if coordID2 != coordID:
-                        cell2 = wcList[coordID2]
-                        self.cell_syncretisms[cell][cell2] = True
+            for c1 in range(len(wcList)):
+                cell1 = wcList[c1]
+                if cell1 not in self.cell_metaParadigm:
+                    self.cell_metaParadigm[cell1] = {}
+                self.cell_metaParadigm[cell1][wc] = True
+                self.metaParadigm_cell[wc][cell1] = True
+
+                for c2 in range(c1+1, len(wcList)):
+                    cell2 = wcList[c2]
+                    if c1 not in self.cell_metaParadigmMate:
+                        self.cell_metaParadigmMate[c1] = {}
+                    if c2 not in self.cell_metaParadigmMate:
+                        self.cell_metaParadigmMate[c2] = {}
+                    self.cell_metaParadigmMate[c1][c2] = True
+                    self.cell_metaParadigmMate[c2][c1] = True
 
         self.get_GOLD_cellMates()
 
@@ -419,33 +430,70 @@ class ANA:
 
     def get_GOLD_cellMates(self):
 
+        # ### WF1 by WF2 method
+
+        # print('Getting gold cell mates')
+        # # Initialize bidirectional cellMates dictionary
+        # self.GOLD_cellMates = {}
+
+        # # Keep track of word forms we've already accounted for
+        # eligibleWFs = dict(self.GOLD_wf_cell)
+
+        # # For each wf, make sure it has a key in the cellMates dictionary
+        # for wf1 in self.GOLD_wf_cell:
+
+
+        #     print(len(eligibleWFs))
+
+
+        #     if wf1 not in self.GOLD_cellMates:
+        #         self.GOLD_cellMates[wf1] = {}
+        #     # Mark that it won't have to be considered in the future
+        #     del eligibleWFs[wf1]
+
+        #     # Check what other wf's share a cell with this wf
+        #     cell1s = set(self.GOLD_wf_cell[wf1])
+        #     for wf2 in eligibleWFs:
+        #         for cell2 in self.GOLD_wf_cell[wf2]:
+
+        #             # Once you find a match, record in both directions and break
+        #             if cell2 in cell1s:
+        #                 self.GOLD_cellMates[wf1][wf2] = True 
+
+        #                 if wf2 not in self.GOLD_cellMates:
+        #                     self.GOLD_cellMates[wf2] = {}
+        #                 self.GOLD_cellMates[wf2][wf1] = True
+
+        #                 break
+
+
+
+        ###################
+
+        ### Cell method
+
+        print('Getting gold cell mates')
         # Initialize bidirectional cellMates dictionary
         self.GOLD_cellMates = {}
 
-        # Keep track of word forms we've already accounted for
-        eligibleWFs = dict(self.GOLD_wf_cell)
+        progress = 0
+        increment = 100/len(self.GOLD_cell_wf)
 
-        # For each wf, make sure it has a key in the cellMates dictionary
-        for wf1 in self.GOLD_wf_cell:
-            if wf1 not in self.GOLD_cellMates:
-                self.GOLD_cellMates[wf1] = {}
-            # Mark that it won't have to be considered in the future
-            del eligibleWFs[wf1]
+        for cell in self.GOLD_cell_wf:
+            progress += increment
+            print('\t{}% complete'.format(str(round(progress, 2))))
+            eligibleWFs = list(self.GOLD_cell_wf[cell])
+            for i1 in range(len(eligibleWFs)):
+                wf1 = eligibleWFs[i1]
+                if wf1 not in self.GOLD_cellMates:
+                    self.GOLD_cellMates[wf1] = {}
+                for i2 in range(i1+1, len(eligibleWFs)):
+                    wf2 = eligibleWFs[i2]
+                    if wf2 not in self.GOLD_cellMates:
+                        self.GOLD_cellMates[wf2] = {}
 
-            # Check what other wf's share a cell with this wf
-            cell1s = set(self.GOLD_wf_cell[wf1])
-            for wf2 in eligibleWFs:
-                for cell2 in self.GOLD_wf_cell[wf2]:
-
-                    # Once you find a match, record in both directions and break
-                    if cell2 in cell1s:
-                        self.GOLD_cellMates[wf1][wf2] = True 
-
-                        if wf2 not in self.GOLD_cellMates:
-                            self.GOLD_cellMates[wf2] = {}
-                        self.GOLD_cellMates[wf2][wf1] = True
-
-                        break
+                    self.GOLD_cellMates[wf1][wf2] = True
+                    self.GOLD_cellMates[wf2][wf1] = True
 
 
     def eval(self, debug=False):
@@ -1561,15 +1609,15 @@ if __name__ == '__main__':
         EXP_ID = '{}_{}-{}-{}-bias{}'.format(args.distance_function, str(args.d1), str(args.d2), str(args.alpha), str(args.bias_against_overabundance))
 
     ########################### READ IN DATA ######################################
-    ### read in file, get UG, Gold, plain (Gold without tags) data/array/skeletons
+    ### Read in file, get UG, Gold, plain (Gold without tags) data/array/skeletons
     ana = ANA(UNIMORPH_LG)
-    ### generate a sample file if requested
+    ### Generate a sample file if requested
     if args.limit != None:
         print_sample_paradigms(ana, args.limit, '{}.sample-{}'.format(UNIMORPH_LG, args.limit))
 
-    ## get all possible array coordinates and word classes according to Gold
-    ana.get_attested_cells()    # in ara, 196 attested coordinates, 19 word classes
-                                    # in deu,  37 attested coordinates,  9 word classes
+    ## Get all possible array cells and meta paradigms according to Gold
+    ana.get_attested_cells()    # in ara, 196 attested cells, 19 meta paradigms
+                                    # in deu,  37 attested cells,  9 meta paradigms
 
 
     ########################### INITIALIZATION ######################################
@@ -1600,7 +1648,7 @@ if __name__ == '__main__':
         oracle_assF = ana.assignMedoid_oracle()
     #############################
 
-    ### MAPPING POSITIONAL VOCAB INTO POSITIONAL CELL EMBEDDINGS
+    ### MAPPING POSITIONAL VOCAB INTO POSITIONAL CELL EMBEDDINGS ###
     elif args.strategy == 'map_voc-cell':
         ana.assignCells_DMmap(args.distance_function, D1=args.d1, D2=args.d2, embeddings=args.embeddings, debug=args.debugCells, alpha=args.alpha, bias=args.bias_against_overabundance, gpu=args.gpu) # debug will show feats and wf's of proposed cells
     #############################
@@ -1615,7 +1663,7 @@ if __name__ == '__main__':
     ############################### EVALUATION ######################################
     ### Evaluate cell mates
     macroF = ana.eval(debug=args.debugCellMates) # debug shows wf's F,p,r, and cellMates
-    ### Secondary evaluation on cell assignment
+    ### Secondary evaluation on cell assignment - may not be relevant
     cell_macroF = ana.evalFull(debug=args.debugCells)
 
 
