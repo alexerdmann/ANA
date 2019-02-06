@@ -40,11 +40,17 @@ def trainVectors(corpus, implementation, dim=300, min_n=3, max_n=6, min_count=1,
 
     return model_gensim
 
-def saveVectors(trained_model, location):
-    trained_model.save(location)
+def saveVectors(trained_model, location, model='gensim', binary=True):
+    if model == 'gensim':
+        trained_model.save(location)
+    elif model == 'w2v':
+        trained_model.wv.save_word2vec_format(location, binary=binary)
 
-def loadVectors(location):
-    return Word2Vec.load(location)
+def loadVectors(location, model='gensim', binary=True):
+    if model == 'gensim':
+        return Word2Vec.load(location)
+    elif model == 'w2v':
+        return KeyedVectors.load_word2vec_format(location, binary=binary)
 
 def in_vocab(word, model):
 	return word in model.wv.vocab
@@ -58,26 +64,11 @@ def cosSim(wf1, wf2, model): # range 0, 1
 def cosDist(wf1, wf2, model):
 	return 1 - cosSim(wf1, wf2, model)
 
+def dimensionality(model):
+    return model.vector_size
+
+def similar_by_vector(vec, model, topn=10):
+    return model.wv.similar_by_vector(vec, topn)
+
 
 # if __name__ == '__main__':
-#     ### NOT FINISHED YET
-
-#     parser = argparse.ArgumentParser()
-#     parser.add_argument('-corpus', type=str, help='Raw corpus to train embeddings on', required=False)
-#     parser.add_argument('-model', type=str, help='Which word vector model to use', choices=['w2v','fasttext'], required=True)
-#     parser.add_argument('-output', type=str, help='Where to save trained vectors', required=True)
-#     parser.add_argument('-action', type=str, help='What do you want to do?', choices=['train', 'query'], required=True)
-#     parser.add_argument('-dim', type=int, help='Dimensions of word vectors', required=False, default=300)
-#     args = parser.parse_args()
-
-#     ### TEST SET UP WITH LEE CORPUS
-#     args.corpus = '{}'.format(os.sep).join([gensim.__path__[0], 'test', 'test_data']) + os.sep
-#     args.corpus = args.corpus + 'lee_background.cor'
-#     ###
-
-#     if args.model == 'fasttext':
-#         model_gensim = train_FT(args)
-#     elif args.model == 'w2v':
-#         model_gensim = train_w2v(args)
-
-#     print(model_gensim)

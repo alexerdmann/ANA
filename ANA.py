@@ -13,38 +13,44 @@ import pickle as pkl
 import operator as op
 from functools import reduce
 import itertools
-from sklearn.metrics import silhouette_samples
+from sklearn import manifold
+from sklearn.cluster import KMeans
+from sklearn.metrics import pairwise_distances, silhouette_samples
+from sklearn.metrics.pairwise import cosine_similarity
+from scipy.spatial.distance import cosine
 
 
 ANA_DIR = os.path.dirname(os.path.realpath(argv[0]))
+MAPPING_DIR = os.path.join(ANA_DIR, 'Mappings')
 UNIMORPH_UG = os.path.join(ANA_DIR, 'Unimorph/unimorph_feature_dimensions.tsv')
 
 
+###################################################################################
 class ANA:
 
     def __init__(self, fn):
         
 
         ### get UG dimensions of features
-        self.UG_dim_to_feats = {}
-        self.UG_feats_to_dim = {}
+        self.UG_dim_feats = {}
+        self.UG_feats_dim = {}
 
         for line in open(UNIMORPH_UG):
             dim, ft = line.split()
             ft = ft.upper()
-            if dim not in self.UG_dim_to_feats:
-                self.UG_dim_to_feats[dim] = {}
-            self.UG_dim_to_feats[dim][ft] = True
-            if ft not in self.UG_feats_to_dim:
-                self.UG_feats_to_dim[ft] = dim
+            if dim not in self.UG_dim_feats:
+                self.UG_dim_feats[dim] = {}
+            self.UG_dim_feats[dim][ft] = True
+            if ft not in self.UG_feats_dim:
+                self.UG_feats_dim[ft] = dim
 
 
         ### get gold data, feat-dim maps, no-fts data, dimension order
-        self.GOLD_data = {}
+        self.GOLD_lem_wf_lstFtlists = {}
         self.dimOrder = []
-        self.data = {}
-        self.GOLD_dim_to_feats = {}
-        self.GOLD_feats_to_dim = {}
+        self.lem_wf = {}
+        self.GOLD_dim_feats = {}
+        self.GOLD_feats_dim = {}
 
         for line in open(fn):
             line = line.strip('\n')
@@ -53,28 +59,28 @@ class ANA:
                 lemma, wf, fts = map(str, line)
 
                 ## record gold and featureless data
-                if lemma not in self.GOLD_data:
-                    self.GOLD_data[lemma] = {}
-                    self.data[lemma] = {}
-                if wf not in self.GOLD_data[lemma]:
-                    self.GOLD_data[lemma][wf] = []
-                    self.data[lemma][wf] = True
+                if lemma not in self.GOLD_lem_wf_lstFtlists:
+                    self.GOLD_lem_wf_lstFtlists[lemma] = {}
+                    self.lem_wf[lemma] = {}
+                if wf not in self.GOLD_lem_wf_lstFtlists[lemma]:
+                    self.GOLD_lem_wf_lstFtlists[lemma][wf] = []
+                    self.lem_wf[lemma][wf] = True
 
                 ## handle feature notation inconsistencies
                 fts = fts.replace('NDEF','INDF')
                 fts = fts.split(';')
                 # check for multiple feats per dimension
-                type_dim2fts = {}
+                type_dim_fts = {}
                 to_remove = {}
                 for ft in fts:
-                    dim = self.UG_feats_to_dim[ft]
-                    if dim not in type_dim2fts:
-                        type_dim2fts[dim] = []
-                    type_dim2fts[dim].append(ft)
-                    if len(type_dim2fts[dim]) > 1:
-                        assert len(type_dim2fts[dim]) == 2
-                        prefix = type_dim2fts[dim][0].split('.')[0]
-                        assert prefix == type_dim2fts[dim][1].split('.')[0]
+                    dim = self.UG_feats_dim[ft]
+                    if dim not in type_dim_fts:
+                        type_dim_fts[dim] = []
+                    type_dim_fts[dim].append(ft)
+                    if len(type_dim_fts[dim]) > 1:
+                        assert len(type_dim_fts[dim]) == 2
+                        prefix = type_dim_fts[dim][0].split('.')[0]
+                        assert prefix == type_dim_fts[dim][1].split('.')[0]
                         to_remove[prefix] = True
                 if len(to_remove) > 0:
                     new_fts = []
@@ -82,17 +88,17 @@ class ANA:
                         if ft not in to_remove:
                             new_fts.append(ft)
                     fts = new_fts
-                self.GOLD_data[lemma][wf].append(fts)
+                self.GOLD_lem_wf_lstFtlists[lemma][wf].append(fts)
 
                 ## induce preferred order of feature dimensions
                 lowestIndex = 0
                 for ft in fts:
-                    dim = self.UG_feats_to_dim[ft]
-                    if dim not in self.GOLD_dim_to_feats:
-                        self.GOLD_dim_to_feats[dim] = {}
-                    if ft not in self.GOLD_dim_to_feats[dim]:
-                        self.GOLD_dim_to_feats[dim][ft] = True
-                        self.GOLD_feats_to_dim[ft] = dim
+                    dim = self.UG_feats_dim[ft]
+                    if dim not in self.GOLD_dim_feats:
+                        self.GOLD_dim_feats[dim] = {}
+                    if ft not in self.GOLD_dim_feats[dim]:
+                        self.GOLD_dim_feats[dim][ft] = True
+                        self.GOLD_feats_dim[ft] = dim
                     if dim in self.dimOrder:
                         dimIndex = self.dimOrder.index(dim)
                         # we need to rearrange
@@ -106,7 +112,7 @@ class ANA:
                     else:
                         self.dimOrder.insert(lowestIndex, dim)
                     lowestIndex += 1
-        assert len(self.dimOrder) == len(self.GOLD_dim_to_feats)
+        assert len(self.dimOrder) == len(self.GOLD_dim_feats)
 
 
         ### get UG skeleton and UG feat to skeleton map
@@ -117,7 +123,7 @@ class ANA:
             dim = self.dimOrder[dimInd]
             featInd = 0
             self.UG_skeleton.append(['NONE'])
-            for ft in self.UG_dim_to_feats[dim]:
+            for ft in self.UG_dim_feats[dim]:
                 featInd += 1
                 self.UG_skeleton[-1].append(ft)
                 self.UG_feats_to_skel_coordinates[ft] = [dimInd, featInd]
@@ -126,75 +132,131 @@ class ANA:
         ### get gold skeleton and feature map with consistent ordering
         ## limit gold skeleton to only UG features relevant in this lg
         self.GOLD_skeleton = []
-        self.GOLD_feats_to_skel_coordinates = {}
+        self.GOLD_fts_skel_coordinates = {}
 
         for dimInd in range(len(self.dimOrder)):
             dim = self.dimOrder[dimInd]
             self.GOLD_skeleton.append(['NONE'])
             featInd = 0
-            for ft in self.GOLD_dim_to_feats[dim]:
+            for ft in self.GOLD_dim_feats[dim]:
                 self.GOLD_skeleton[-1].append(ft)
                 featInd += 1
-                self.GOLD_feats_to_skel_coordinates[ft] = [dimInd, featInd]
+                self.GOLD_fts_skel_coordinates[ft] = [dimInd, featInd]
 
 
         ### get gold array of paradigms
-        self.GOLD_array = {}
+        self.GOLD_lem_wf_lstSkelCoordlsts = {}
 
-        for lemma in self.GOLD_data:
-            self.GOLD_array[lemma] = {}
-            for wf in self.GOLD_data[lemma]:
-                self.GOLD_array[lemma][wf] = []
-                for fts in self.GOLD_data[lemma][wf]:
-                    self.GOLD_array[lemma][wf].append([0] * len(self.GOLD_skeleton))
+        for lemma in self.GOLD_lem_wf_lstFtlists:
+            self.GOLD_lem_wf_lstSkelCoordlsts[lemma] = {}
+            for wf in self.GOLD_lem_wf_lstFtlists[lemma]:
+                self.GOLD_lem_wf_lstSkelCoordlsts[lemma][wf] = []
+                for fts in self.GOLD_lem_wf_lstFtlists[lemma][wf]:
+                    self.GOLD_lem_wf_lstSkelCoordlsts[lemma][wf].append([0] * len(self.GOLD_skeleton))
                     for ft in fts:
-                        coord = self.GOLD_feats_to_skel_coordinates[ft]
+                        coord = self.GOLD_fts_skel_coordinates[ft]
                         assert ft == self.GOLD_skeleton[coord[0]][coord[1]]
-                        self.GOLD_array[lemma][wf][-1][coord[0]] = coord[1]
+                        self.GOLD_lem_wf_lstSkelCoordlsts[lemma][wf][-1][coord[0]] = coord[1]
 
 
         ## integerize everything
-        self.wf2lem = {}
-        self.lem2wf = {}        
-        self.ind2wf = {}
-        self.wf2ind = {}
-        self.lem2ind = {}
-        self.ind2lem = {}
+        self.wf_lem = {}
+        self.ind_wf = {}
+        self.wf_ind = {}
+        self.lem_ind = {}
+        self.ind_lem = {}
 
         ind = -1
-        deterministicLemOrder = list(self.data)
+        deterministicLemOrder = list(self.lem_wf)
         deterministicLemOrder.sort()
         for lem in deterministicLemOrder:
-            deterministicWForder = list(self.data[lem])
+            deterministicWForder = list(self.lem_wf[lem])
             deterministicWForder.sort()
             for wf in deterministicWForder:
                 ind += 1
                 ## manage wf's
-                if wf not in self.wf2lem:
-                    self.wf2lem[wf] = {}
-                self.wf2lem[wf][lem] = True
-                if wf not in self.wf2ind:
-                    self.wf2ind[wf] = {}
-                self.wf2ind[wf][ind] = True
+                if wf not in self.wf_lem:
+                    self.wf_lem[wf] = {}
+                self.wf_lem[wf][lem] = True
+                if wf not in self.wf_ind:
+                    self.wf_ind[wf] = {}
+                self.wf_ind[wf][ind] = True
                 ## manage lemmas's
-                if lem not in self.lem2wf:
-                    self.lem2wf[lem] = {}
-                self.lem2wf[lem][wf] = True
-                if lem not in self.lem2ind:
-                    self.lem2ind[lem] = {}
-                self.lem2ind[lem][ind] = True
+                if lem not in self.lem_ind:
+                    self.lem_ind[lem] = {}
+                self.lem_ind[lem][ind] = True
                 ## manage ind's
-                self.ind2wf[ind] = wf
-                self.ind2lem[ind] = lem
+                self.ind_wf[ind] = wf
+                self.ind_lem[ind] = lem
 
 
-    def learn_exponence_weights(self):  ### TO ADD: LINEAR INTERPOLATION WITH NGRAM EDIT BLOCKS
+    def get_attested_cells(self):
+
+        ### get all attested coordinates and word classes
+        self.allCells = {}
+        lemma_coords = {}
+        self.metaParadigms = {}
+        self.cell_lstCoord = {}
+        self.GOLD_cell_wf = {}
+        self.GOLD_wf_cell = {}
+
+        for lemma in self.GOLD_lem_wf_lstSkelCoordlsts:
+            if lemma not in lemma_coords:
+                lemma_coords[lemma] = {}
+            for wf in self.GOLD_lem_wf_lstSkelCoordlsts[lemma]:
+                for realization in self.GOLD_lem_wf_lstSkelCoordlsts[lemma][wf]:
+                    cell = ','.join(str(x) for x in realization)
+
+                    if cell not in self.GOLD_cell_wf:
+                        self.GOLD_cell_wf[cell] = {}
+                    self.GOLD_cell_wf[cell][wf] = True
+
+                    if wf not in self.GOLD_wf_cell:
+                        self.GOLD_wf_cell[wf] = {}
+                    self.GOLD_wf_cell[wf][cell] = True
+
+                    self.cell_lstCoord[cell] = []
+                    for f in range(len(realization)):
+                        self.cell_lstCoord[cell].append('{},{}'.format(f, realization[f]))
+
+                    self.allCells[cell] = True
+                    lemma_coords[lemma][cell] = True
+            all_coords = list(lemma_coords[lemma].keys())
+            all_coords.sort()
+            all_coords = '\n'.join(all_coords)
+            self.metaParadigms[all_coords] = True
+
+
+        ### map all coordinates to possible wordClasses and possible paradigm mates
+        self.cells_wordClasses = {}
+        self.cell_syncretisms = {}
+
+        for wc in self.metaParadigms:
+            wcList = wc.split('\n')
+            for coordID in range(len(wcList)):
+                cell = wcList[coordID]
+                if cell not in self.cells_wordClasses:
+                    self.cells_wordClasses[cell] = {}
+                    self.cell_syncretisms[cell] = {}
+                self.cells_wordClasses[cell][wc] = True
+                for coordID2 in range(len(wcList)):
+                    if coordID2 != coordID:
+                        cell2 = wcList[coordID2]
+                        self.cell_syncretisms[cell][cell2] = True
+
+        self.get_GOLD_cellMates()
+
+
+    def learn_exponence_weights(self, bias_against_overabundance=1):  ### TO ADD: LINEAR INTERPOLATION WITH NGRAM EDIT BLOCKS
 
         try:
-            self.baseWeights = pkl.load(open('{}.baseWeights.pkl'.format(UNIMORPH_LG), 'rb'))
+            if bias_against_overabundance == 1:
+                self.condExpWeight = pkl.load(open('{}.condExpWeight.pkl'.format(UNIMORPH_LG), 'rb'))
+            else:
+                self.condExpWeight = pkl.load(open('{}-{}.condExpWeight.pkl'.format(UNIMORPH_LG, str(bias_against_overabundance)), 'rb'))
             print('Reading cached paradigm conditional exponence weights')
+            self.baseWeights = pkl.load(open('{}.baseWeights.pkl'.format(UNIMORPH_LG), 'rb'))
             self.exponenceWeights = pkl.load(open('{}.exponenceWeights.pkl'.format(UNIMORPH_LG), 'rb'))
-            self.condExpWeight = pkl.load(open('{}.condExpWeight.pkl'.format(UNIMORPH_LG), 'rb'))
 
         except FileNotFoundError:
             print('Learning paradigm conditional exponence weights')
@@ -204,11 +266,11 @@ class ANA:
 
             ### get edit distance between all possible paradigm mate pairs
             counter = 0
-            for lemma in self.data:
+            for lemma in self.lem_wf:
                 self.baseWeights[lemma] = {}
 
-                eligibleWF2 = dict(self.data[lemma])
-                for wf1 in self.data[lemma]:
+                eligibleWF2 = dict(self.lem_wf[lemma])
+                for wf1 in self.lem_wf[lemma]:
                     del eligibleWF2[wf1]
                     for wf2 in eligibleWF2:
 
@@ -255,8 +317,8 @@ class ANA:
 
                 ## exception handling for singleton paradigms
                 if len(self.baseWeights[lemma]) == 0:
-                    assert len(self.data[lemma]) == 1
-                    for wf in self.data[lemma]:
+                    assert len(self.lem_wf[lemma]) == 1
+                    for wf in self.lem_wf[lemma]:
                         for ch in wf:
                             if ch not in self.baseWeights[lemma]:
                                 self.baseWeights[lemma][ch] = [0, 0]
@@ -275,275 +337,733 @@ class ANA:
             for lemma in self.baseWeights:
                 self.condExpWeight[lemma] = {}
                 for ch in self.baseWeights[lemma]:
-                    self.condExpWeight[lemma][ch] = self.exponenceWeights[ch] / (self.exponenceWeights[ch] + self.baseWeights[lemma][ch])
+                    self.condExpWeight[lemma][ch] = self.exponenceWeights[ch] / (self.exponenceWeights[ch] + bias_against_overabundance*self.baseWeights[lemma][ch])
 
             ### cache learned weights
             pkl.dump( self.baseWeights, open('{}.baseWeights.pkl'.format(UNIMORPH_LG), 'wb' ) )
             pkl.dump( self.exponenceWeights, open('{}.exponenceWeights.pkl'.format(UNIMORPH_LG), 'wb' ) )
-            pkl.dump( self.condExpWeight, open('{}.condExpWeight.pkl'.format(UNIMORPH_LG), 'wb' ) )
+            if bias_against_overabundance == 1:
+                pkl.dump( self.condExpWeight, open('{}.condExpWeight.pkl'.format(UNIMORPH_LG), 'wb' ) )
+            else:
+                pkl.dump( self.condExpWeight, open('{}-{}.condExpWeight.pkl'.format(UNIMORPH_LG, str(bias_against_overabundance)), 'wb' ) )
 
 
-    def get_likelihood_cell_mate_bad(self, p1, wf1, p2, wf2):
-
-        # for both words, for every char in word
-            # add condExpWeight to denominator
-        # for every matched char, for both words,
-            # add condExpWeight to numerator
-
-        ### comment this out to promote overabundance in weightedLev metric
-        if p1 == p2:
-            return 0.0
-
-        # get all matched blocks
-        blocks = lv.matching_blocks(lv.editops(''.join(wf1), ''.join(wf2)), len(wf1), len(wf2))
-
-        # mark which characters matched
-        match1 = [False] * len(wf1)
-        match2 = [False] * len(wf2)
-        for match in blocks:
-            for i in range(match[0], match[0]+match[2]):
-                match1[i] = True
-            for i in range(match[1], match[1]+match[2]):
-                match2[i] = True
-
-        # sum numerator and denominator
-        numerator = 0.0
-        denominator = 0.0000001
-        # over word 1
-        for i in range(len(match1)):
-            if match1[i]:
-                ch = wf1[i]
-                numerator += self.exponenceWeights[ch]
-                denominator += self.baseWeights[p1][ch] + self.exponenceWeights[ch]
-        # over word 2
-        for i in range(len(match2)):
-            if match2[i]:
-                ch = wf2[i]
-                numerator += self.exponenceWeights[ch]
-                denominator += self.baseWeights[p2][ch] + self.exponenceWeights[ch]
-
-        similarity = numerator/denominator
-        
-        return similarity
-
-
-    def get_likelihood_cell_mate_2(self, p1, wf1, p2, wf2):
-
-        # for both words, for every char in word
-            # add condExpWeight to denominator
-        # for every matched char, for both words,
-            # add condExpWeight to numerator
-
-        ### comment this out to promote overabundance in weightedLev metric
-        if p1 == p2:
-            return 0.0
-
-        # get all matched blocks
-        blocks = lv.matching_blocks(lv.editops(''.join(wf1), ''.join(wf2)), len(wf1), len(wf2))
-
-        # mark which characters matched
-        match1 = [False] * len(wf1)
-        match2 = [False] * len(wf2)
-        for match in blocks:
-            for i in range(match[0], match[0]+match[2]):
-                match1[i] = True
-            for i in range(match[1], match[1]+match[2]):
-                match2[i] = True
-
-        # sum numerator and denominator
-        numerator = 0.0
-        denominator = 0.0000001
-        # over word 1
-        for i in range(len(match1)):
-            ch = wf1[i]
-            denominator += self.condExpWeight[p1][ch]
-            if match1[i]:
-                numerator += self.condExpWeight[p1][ch]
-        # over word 2
-        for i in range(len(match2)):
-            ch = wf2[i]
-            denominator += self.condExpWeight[p2][ch]
-            if match2[i]:
-                numerator += self.condExpWeight[p2][ch]
-
-        similarity = numerator/denominator
-        
-        return similarity
-
-
-    def get_likelihood_cell_mate(self, p1, wf1, p2, wf2):
-
-        # for both words, for every char in word
-            # add condExpWeight to denominator
-        # for every matched char, for both words,
-            # add condExpWeight to numerator
-
-        ### comment this out to promote overabundance in weightedLev metric
-        if p1 == p2:
-            return 0.0
-
-        # get all matched blocks
-        blocks = lv.matching_blocks(lv.editops(''.join(wf1), ''.join(wf2)), len(wf1), len(wf2))
-
-        # mark which characters matched
-        match1 = [False] * len(wf1)
-        match2 = [False] * len(wf2)
-        for match in blocks:
-            for i in range(match[0], match[0]+match[2]):
-                match1[i] = True
-            for i in range(match[1], match[1]+match[2]):
-                match2[i] = True
-
-        # sum numerator and denominator
-        numerator = 0.0
-        denominator = 0.0000001
-        # over word 1
-        for i in range(len(match1)):
-            ch = wf1[i]
-            denominator += self.condExpWeight[p1][ch]
-            if match1[i]:
-                numerator += self.condExpWeight[p1][ch]
-        # over word 2
-        for i in range(len(match2)):
-            ch = wf2[i]
-            denominator += self.condExpWeight[p2][ch]
-            if match2[i]:
-                numerator += self.condExpWeight[p2][ch]
-
-        similarity = numerator/denominator
-        
-        return similarity
-
-
-    def get_likelihood_cell_mate_control(self, p1, wf1, p2, wf2):
-
-        numerator = 0
-        denominator = len(wf1) + len(wf2)
-        blocks = lv.matching_blocks(lv.editops(''.join(wf1), ''.join(wf2)), len(wf1), len(wf2))
-        for match in blocks:
-            for i in range(match[0], match[0]+match[2]):
-                numerator += 1
-
-        return numerator/denominator
-
-
-    def get_possible_coordinates(self):
-
-        self.all_possible_coordinates = [[]]
-
-        dimInd = -1
-        while dimInd < len(self.GOLD_skeleton)-1:
-            dimInd += 1
-            new_total_possible_coordinates = []
-            for coord_so_far in self.all_possible_coordinates:
-                for featInd in range(len(self.GOLD_skeleton[dimInd])):
-                    new_possible_coordinate = coord_so_far[:]
-                    new_possible_coordinate.append(featInd)
-                    new_total_possible_coordinates.append(new_possible_coordinate)
-            self.all_possible_coordinates = new_total_possible_coordinates[:]
-
-
-    def get_attested_coordinates(self):
-
-        ### get all attested coordinates and word classes
-        self.total_coordinates = {}
-        lemma_to_coords = {}
-        self.total_wordClasses = {}
-        self.strCoord_lstCoord = {}
-        self.GOLD_cell_wf = {}
-
-        for lemma in self.GOLD_array:
-            if lemma not in lemma_to_coords:
-                lemma_to_coords[lemma] = {}
-            for wf in self.GOLD_array[lemma]:
-                for realization in self.GOLD_array[lemma][wf]:
-                    coord = ','.join(str(x) for x in realization)
-
-                    if coord not in self.GOLD_cell_wf:
-                        self.GOLD_cell_wf[coord] = {}
-                    self.GOLD_cell_wf[coord][wf] = True
-
-                    self.strCoord_lstCoord[coord] = []
-                    for f in range(len(realization)):
-                        self.strCoord_lstCoord[coord].append('{},{}'.format(f, realization[f]))
-
-                    self.total_coordinates[coord] = True
-                    lemma_to_coords[lemma][coord] = True
-            all_coords = list(lemma_to_coords[lemma].keys())
-            all_coords.sort()
-            all_coords = '\n'.join(all_coords)
-            self.total_wordClasses[all_coords] = True
-
-
-        ### map all coordinates to possible wordClasses and possible paradigm mates
-        self.coords_to_wordClasses = {}
-        self.coord_syncretisms = {}
-
-        for wc in self.total_wordClasses:
-            wcList = wc.split('\n')
-            for coordID in range(len(wcList)):
-                coord = wcList[coordID]
-                if coord not in self.coords_to_wordClasses:
-                    self.coords_to_wordClasses[coord] = {}
-                    self.coord_syncretisms[coord] = {}
-                self.coords_to_wordClasses[coord][wc] = True
-                for coordID2 in range(len(wcList)):
-                    if coordID2 != coordID:
-                        coord2 = wcList[coordID2]
-                        self.coord_syncretisms[coord][coord2] = True
-
-
-    def assignCellMates_random(self):
+    def assignCells_random(self):
 
         print('Randomly assigning forms to cells')
 
-        self.array = {}
+        self.cell_wf = {}
+        self.wf_cell = {}
+        self.ind_cell = {}
+        self.cell_ind = {}
         
-        for lemma in self.data:
-            self.assignParadigm_random(lemma)
+        for lem in self.lem_wf:
+            self.assignParadigm_random(lem)
 
-        cellMates, coordinates_to_forms, forms_to_coordinates = get_cellMates(ana.array)
-
-        return cellMates
+        self.get_cellMates()
 
 
-    def assignParadigm_random(self, lemma):
+    def assignParadigm_random(self, lem):
 
-        self.array[lemma] = {}
-        random_coords = random.sample(list(self.total_coordinates), len(self.data[lemma]))
-        for wf in self.data[lemma]:
-            coord = random_coords.pop()
-            listCord = [int(x) for x in coord.split(',')]
-            self.array[lemma][wf] = [listCord]
+        random_cells = random.sample(list(self.allCells), len(self.lem_ind[lem]))
+        random.shuffle(random_cells)
+
+        for ind in self.lem_ind[lem]:
+            cell = random_cells.pop()
+            wf = self.ind_wf[ind]
+
+            # update wf_cell
+            if wf not in self.wf_cell:
+                self.wf_cell[wf] = {}
+            self.wf_cell[wf][cell] = True
+            # update cell_wf and cell_ind
+            if cell not in self.cell_wf:
+                self.cell_wf[cell] = {}
+                self.cell_ind[cell] = {}
+            self.cell_wf[cell][wf] = True
+            self.cell_ind[cell][ind] = True
+            # update ind_cell
+            self.ind_cell[ind] = cell
 
 
-    def get_distance_matrix(self, distance_function, embeddings=None, D1= None, D2=None, alpha=None):
+    def get_cellMates(self):
 
-        n = len(self.ind2wf)
-        if distance_function == 'interpolated':
-            filename = '{}.{}_{}-{}-{}_distMatrix.dat'.format(UNIMORPH_LG, distance_function, D1, D2, str(alpha))
+        # Initialize bidirectional cellMates dictionary
+        self.cellMates = {}
+
+        # Keep track of word forms we've already accounted for
+        eligibleWFs = dict(self.wf_cell)
+
+        # For each wf, make sure it has a key in the cellMates dictionary
+        for wf1 in self.wf_cell:
+            if wf1 not in self.cellMates:
+                self.cellMates[wf1] = {}
+            # Mark that it won't have to be considered in the future
+            del eligibleWFs[wf1]
+
+            # Check what other wf's share a cell with this wf
+            cell1s = set(self.wf_cell[wf1])
+            for wf2 in eligibleWFs:
+                for cell2 in self.wf_cell[wf2]:
+
+                    # Once you find a match, record in both directions and break
+                    if cell2 in cell1s:
+                        self.cellMates[wf1][wf2] = True 
+
+                        if wf2 not in self.cellMates:
+                            self.cellMates[wf2] = {}
+                        self.cellMates[wf2][wf1] = True
+
+                        break
+
+
+    def get_GOLD_cellMates(self):
+
+        # Initialize bidirectional cellMates dictionary
+        self.GOLD_cellMates = {}
+
+        # Keep track of word forms we've already accounted for
+        eligibleWFs = dict(self.GOLD_wf_cell)
+
+        # For each wf, make sure it has a key in the cellMates dictionary
+        for wf1 in self.GOLD_wf_cell:
+            if wf1 not in self.GOLD_cellMates:
+                self.GOLD_cellMates[wf1] = {}
+            # Mark that it won't have to be considered in the future
+            del eligibleWFs[wf1]
+
+            # Check what other wf's share a cell with this wf
+            cell1s = set(self.GOLD_wf_cell[wf1])
+            for wf2 in eligibleWFs:
+                for cell2 in self.GOLD_wf_cell[wf2]:
+
+                    # Once you find a match, record in both directions and break
+                    if cell2 in cell1s:
+                        self.GOLD_cellMates[wf1][wf2] = True 
+
+                        if wf2 not in self.GOLD_cellMates:
+                            self.GOLD_cellMates[wf2] = {}
+                        self.GOLD_cellMates[wf2][wf1] = True
+
+                        break
+
+
+    def eval(self, debug=False):
+
+        print('EVALUATING... (THIS MAY TAKE A HOT SEC)')
+        total = len(self.GOLD_cellMates)
+        increment = 100/total
+
+        # take macro F score of cellMates over all forms in gold vocabulary
+        Fs = []
+        minF = 2
+        maxF = -1
+        counter = 0
+        nextTen = 10
+        for wf in self.GOLD_cellMates:
+     
+            try:
+                correctSet = set(self.GOLD_cellMates[wf]).intersection(set(self.cellMates[wf]))
+                correct = len(correctSet)
+            except IndexError:
+                correctSet = set()
+                correct = 0
+
+            if correct == 0:
+                F = 0
+            else:
+                predicted = len(self.cellMates[wf])
+                total_recall_with_Arnold_Schwarzeneggar = len(self.GOLD_cellMates[wf])
+                
+                prec = correct / predicted
+                rec = correct / total_recall_with_Arnold_Schwarzeneggar
+                F = 100*( (2 * prec * rec) / (prec + rec) )
+
+            if F < minF:
+                minF = F 
+            if F > maxF:
+                maxF = F
+            Fs.append(F)
+
+            if debug:
+
+                correctFeats = {}
+                print('\n\n{}\t{} F-score'.format(wf, str(round(F, 2))))
+                for par in self.wf_lem[wf]:
+                    print('\tLemma {}'.format(par))
+                    for fts in self.GOLD_lem_wf_lstFtlists[par][wf]:
+                        print('\t\t{}'.format(';'.join(fts)))
+                        correctFeats[';'.join(fts)] = True
+
+                precErrors = {}
+                precErrorFts = {}
+                for x in self.cellMates[wf]:
+                    if x not in self.GOLD_cellMates[wf]:
+                        precErrors[x] = True
+                        for par in self.wf_lem[x]:
+                            for fts in self.GOLD_lem_wf_lstFtlists[par][x]:
+                                fts = ';'.join(fts)
+                                if fts not in precErrorFts:
+                                    precErrorFts[fts] = 0
+                                precErrorFts[fts] += 1
+
+                recErrors = {}
+                recErrorFts = {}
+                for x in self.GOLD_cellMates[wf]:
+                    if x not in self.cellMates[wf]:
+                        recErrors[x] = True
+                        for par in self.wf_lem[x]:
+                            for fts in self.GOLD_lem_wf_lstFtlists[par][x]:
+                                fts = ';'.join(fts)
+                                if fts not in recErrorFts:
+                                    recErrorFts[fts] = 0
+                                recErrorFts[fts] += 1
+
+
+                rankedPrecErrorFts = list(zip(list(precErrorFts.values()), list(precErrorFts.keys())))
+                rankedPrecErrorFts.sort(reverse=True)
+                rankedPrecErrorFts = '  '.join('{}_({})'.format(l[1], str(l[0])) for l in rankedPrecErrorFts)
+
+                rankedRecErrorFts = list(zip(list(recErrorFts.values()), list(recErrorFts.keys())))
+                rankedRecErrorFts.sort(reverse=True)
+                rankedRecErrorFts = '  '.join('{}_({})'.format(l[1], str(l[0])) for l in rankedRecErrorFts)
+
+                print('\tCORRECT:\n{}'.format(', '.join(list(correctSet))))
+                print('\tPREC ERRORS:\n{}\n{}'.format(rankedPrecErrorFts, ', '.join(list(precErrors))))
+                print('\tREC ERRORS:\n{}\n{}'.format(rankedRecErrorFts, ', '.join(list(recErrors))))
+
+            counter += increment
+            if counter > nextTen:
+                print('\t{}% complete evaluating cellMate matches'.format(str(round(counter, 0))))
+                nextTen += 10
+
+        macroF = sum(Fs)/len(Fs)
+        strMacroF = str(round(macroF, 2))
+        strMinF = str(round(minF, 2))
+        strMaxF = str(round(maxF, 2))
+        stdev = statistics.stdev(Fs)
+        strStdev = str(round(stdev, 2))
+
+        print('\n\nMacro F: {}\t(min: {}, max: {}, stdev: {}, total instances: {})'.format(strMacroF, strMinF, strMaxF, strStdev, str(total)))
+
+        return macroF
+
+
+    def get_cell_distance_matrix(self):
+
+        self.cell_cellInd = {}
+        self.cellInd_cell = {}
+        self.cellDistMat = np.array([[0.0]*len(self.allCells)]*len(self.allCells))
+
+        cellList = list(self.allCells)
+        for c1 in range(len(cellList)):
+            cell1 = cellList[c1]
+            fts1 = set(get_MSP_from_cell(self.GOLD_skeleton, cell1, option='stringList'))
+            self.cell_cellInd[cell1] = c1 
+            self.cellInd_cell[c1] = cell1
+            for c2 in range(c1+1, len(cellList)):
+                cell2 = cellList[c2]
+                fts2 = set(get_MSP_from_cell(self.GOLD_skeleton, cell2, option='stringList'))
+
+                similarity = float(len(fts1&fts2) / len(fts1|fts2))
+                distance = float(1 - similarity)
+
+                self.cellDistMat[c1][c2] = distance
+                self.cellDistMat[c2][c1] = distance
+
+
+    def get_medoids(self, distance_function, debug=False, embeddings=None, D1=None, D2=None, alpha=None, bias=1):  # TO ADD: CHANGE K-MEDOID CLUSTERING OUTPUT TO A SOFTMAX DISTRIBUTION TO FACILITATE DOWNSTREAM CELL REASSIGNMENTS
+
+        # get distance metrics
+        self.distMat, embeddings = self.get_distance_matrix(distance_function, D1=D1, D2=D2, embeddings=embeddings, alpha=alpha, bias=bias)
+
+        # k-medoid clustering of distance metrics
+        print('K-medoid clustering {} distance matrix'.format(distance_function))
+        self.medoid_centroidInd, self.medoid_ind = kMedoids(self.distMat, len(self.allCells))
+        # self.medoid_ind is a dictionary from cluster labels to an array of member ind's
+        # M is a list of medoid-center ind's with indeces corresponding to cluster labels
+
+        self.ind_centroidInd = {}
+        self.ind_medoid = {}
+        self.wf_medoid = {}
+        self.medoid_wf = {}
+        for medoid in self.medoid_ind:
+            self.medoid_wf[medoid] = {}
+            for ind in self.medoid_ind[medoid]:
+                wf = self.ind_wf[ind]
+                self.ind_medoid[ind] = medoid
+                centroidInd = self.medoid_centroidInd[medoid]
+                self.ind_centroidInd[ind] = centroidInd
+                self.ind_medoid[ind] = medoid
+                if wf not in self.wf_medoid:
+                    self.wf_medoid[wf] = {}
+                self.wf_medoid[wf][medoid] = True
+                self.medoid_wf[medoid][wf] = True
+
+        # MUSE(srcMat, srcMatVec, tgtMat, tgtMatVec, mapping_dir, srcDest, tgtDest, gpu=False)
+
+
+    def get_clusters(self, distance_function, debug=False, embeddings=None, D1=None, D2=None, alpha=None, bias=1):
+
+        # Get distance matrix
+        self.distMat, embeddings = self.get_distance_matrix(distance_function, D1=D1, D2=D2, embeddings=embeddings, alpha=alpha, bias=bias)
+
+        ### Get positional matrix
+        posMatDat = '{}.{}_posMatrix.dat'.format(UNIMORPH_LG, EXP_ID)
+        ### Check if the positional embeddings have already been computed
+        try:
+            self.posMat = np.load(posMatDat)
+        ### If not, compute them
+        except FileNotFoundError:
+            self.posMat = embed_distMat(self.distMat, len(self.allCells))
+            with open(posMatDat, 'wb') as outfile:
+                np.save(outfile, self.posMat)
+
+        # k-medoid clustering of distance metrics
+        print('K-means clustering {} distance matrix'.format(distance_function))
+
+        kmeans = KMeans(n_clusters=len(self.allCells)).fit(self.posMat)
+        ind_cluster = kmeans.labels_
+        cluster_centroid = kmeans.cluster_centers_
+
+        self.ind_cluster = {}
+        self.cluster_ind = {}
+        self.wf_cluster = {}
+        self.cluster_wf = {}
+        for ind in range(len(ind_cluster)):
+            cluster = ind_cluster[ind]
+            wf = self.ind_wf[ind]
+            self.ind_cluster[ind] = cluster
+            if cluster not in self.cluster_ind:
+                self.cluster_ind[cluster] = {}
+                self.cluster_wf[cluster] = {}
+            self.cluster_ind[cluster][ind] = True
+            self.cluster_wf[cluster][wf] = True
+            if wf not in self.wf_cluster:
+                self.wf_cluster[wf] = {}
+            self.wf_cluster[wf][cluster] = True
+
+        if debug:
+            for cluster in self.cluster_ind:
+                print('\nCLUSTER {}'.format(cluster))
+                mostCommonCells = {}
+                printLines = []
+                for ind in self.cluster_ind[cluster]:
+                    wf = self.ind_wf[ind]
+                    lem = self.ind_lem[ind]
+                    x = len(self.GOLD_wf_cell[wf])
+                    for ftList in self.GOLD_lem_wf_lstFtlists[lem][wf]:
+                        cell = '_'.join(ftList)
+                        x -= 1
+                        if cell not in mostCommonCells:
+                            mostCommonCells[cell] = 0
+                        mostCommonCells[cell] += 1
+                        if x > 0:
+                            printLines.append('\t\t{}'.format(cell))
+                        else:
+                            printLines.append('\t\t{}\t{}  <-  {}'.format(cell, wf, lem))
+                mostCommonCells = list(zip(mostCommonCells.values(), mostCommonCells.keys()))
+                mostCommonCells.sort(reverse=True)
+                print('\tMost frequent gold cells')
+                print('\n'.join('\t\t{}\t{}'.format(q[0], q[1]) for q in mostCommonCells))
+                print('\tAll cluster members with corresponding lemma and gold cells')
+                for pl in printLines:
+                    print(pl)
+
+
+        assert len(self.ind_cluster) == len(self.ind_wf)
+
+        # MUSE(srcMat, srcMatVec, tgtMat, tgtMatVec, mapping_dir, srcDest, tgtDest, gpu=False)
+
+
+    def assignMedoid_random(self, mORc='medoid'):
+
+        if mORc == 'medoid':
+            group_ind = self.medoid_ind
+        elif mORc == 'cluster':
+            group_ind = self.cluster_ind
         else:
-            filename = '{}.{}_distMatrix.dat'.format(UNIMORPH_LG, distance_function)
+            print('UNSUPPORTED GROUPING: {}'.format(mORc))
+            exit()
 
+        self.cell_ind = {}
+        self.ind_cell = {}
+        self.wf_cell = {}
+        self.cell_wf = {}
+        self.medoid_cell = {}
+        self.cell_medoid = {}
+
+        random_cells = list(self.allCells)
+        random.shuffle(random_cells)
+
+        for medoid in group_ind:
+            cell = random_cells.pop(0)
+            self.cell_wf[cell] = {}
+            for ind in group_ind[medoid]:
+                wf = self.ind_wf[ind]
+                if wf not in self.wf_cell:
+                    self.wf_cell[wf] = {}
+                self.wf_cell[wf][cell] = True 
+                self.cell_wf[cell][wf] = True
+                self.medoid_cell[medoid] = cell
+                self.cell_medoid[cell] = medoid
+                self.ind_cell[ind] = cell
+                if cell not in self.cell_ind:
+                    self.cell_ind[cell] = {}
+                self.cell_ind[cell][ind] = True
+
+        assert len(random_cells) == 0
+
+
+    def assignMedoid_oracle(self, mORc='medoid'):
+
+        if mORc == 'medoid':
+            group_ind = self.medoid_ind
+        elif mORc == 'cluster':
+            group_ind = self.cluster_ind
+        else:
+            print('UNSUPPORTED GROUPING: {}'.format(mORc))
+            exit()
+
+        medoid_cell_F = []
+
+        for medoid in group_ind:
+            for cell in self.allCells:
+
+                predicted = {}
+                correct = {}
+                total = dict(self.GOLD_cell_wf[cell])
+
+                for ind in group_ind[medoid]:
+                    wf = self.ind_wf[ind]
+                    predicted[wf] = True
+                    for lem in self.wf_lem[wf]:
+                        if wf in total:
+                            correct[wf] = True
+                            break
+
+                correct = len(correct)
+                predicted = len(predicted)
+                total = len(total)
+
+                if correct == 0:
+                    F = 0
+
+                else:
+
+                    prec = correct / predicted
+                    rec = correct / total 
+                    F = 100 * ( (2 * prec * rec) / (prec + rec) )
+
+                medoid_cell_F.append([F, [medoid,cell]])
+
+        medoid_cell_F.sort(reverse=True)
+
+        available_Ms = list(group_ind)
+        available_Cs = list(self.allCells)
+
+        cell_wf = {}
+
+        for item in medoid_cell_F:
+            medoid = item[1][0]
+            cell = item[1][1]
+            if medoid in available_Ms and cell in available_Cs:
+                available_Ms.remove(medoid)
+                available_Cs.remove(cell)
+                cell_wf[cell] = {}
+                for ind in group_ind[medoid]:
+                    cell_wf[cell][self.ind_wf[ind]] = True
+                if len(cell_wf) == len(self.GOLD_cell_wf):
+                    break
+
+        oracular_assignment_F = evalFull(self.GOLD_cell_wf, cell_wf)
+
+        return oracular_assignment_F
+
+
+    def assignCells_clusterMapHybrid(self, distance_function, D1=None, D2=None, embeddings=None,debugCells = False, debugClusters=False, alpha=None, bias=1, gpu=False, topn=5):
+
+        self.DMmap(distance_function, D1=D1, D2=D2, embeddings=embeddings, debug=debugCells, alpha=alpha, bias=bias, gpu=gpu)
+        self.DMmap_assign_probabilistic(topn=topn)
+        self.get_clusters(args.distance_function, debug=debugClusters, embeddings=args.embeddings, D1=args.d1, D2=args.d2, alpha=args.alpha, bias=args.bias_against_overabundance)
+        
+        # Get bidirectional cellMates dictionary
+        self.cellMates = {}
+
+        progress = 0
+        increment = 100/len(self.ind_wf)
+        nextTen = 10
+        origNextTen = nextTen
+        print('Getting cell mates based on cluster membership and cell assignment')
+        eligibleInds = dict(self.ind_wf)
+        for ind1 in self.ind_wf:
+            del eligibleInds[ind1]
+            progress += increment
+            if progress >= nextTen:
+                print('{}% complete'.format(str(round(progress, 2))))
+                nextTen += origNextTen
+            wf1 = self.ind_wf[ind1]
+            if wf1 not in self.cellMates:
+                self.cellMates[wf1] = {}
+            cluster1 = self.ind_cluster[ind1]
+            cell1 = self.ind_cell[ind1]
+
+            for ind2 in eligibleInds:
+                wf2 = self.ind_wf[ind2]
+                cluster2 = self.ind_cluster[ind2]
+                cell2 = self.ind_cell[ind2]
+
+                if cluster1 == cluster2 or (cell1 in self.ind_bestCells[ind2] and cell2 in self.ind_bestCells[ind1]):
+                    if wf2 not in self.cellMates:
+                        self.cellMates[wf2] = {}
+                    self.cellMates[wf1][wf2] = True 
+                    self.cellMates[wf2][wf1] = True
+
+
+    def DMmap_assign_probabilistic(self, prohibit_over_abundance=False, topn=5):
+
+        # 5) assign inds and wfs to cells based on NN function, with constraints against:
+            # over abundance
+            # infeasible paradigm shapes according to self.metaParadigms?
+        self.cell_wf = {}
+        self.wf_cell = {}
+        self.ind_cell = {}
+        self.cell_ind = {}
+        self.lem_cell_ind = {} # watch out for over abundance
+        self.ind_bestCells = {}
+        averted_over_abundance = 0
+        for cell in self.allCells:
+            self.cell_wf[cell] = {}
+            self.cell_ind[cell] = {}
+        for ind in range(len(self.posMat)):
+            wf = self.ind_wf[ind]
+            lem = self.ind_lem[ind]
+            if lem not in self.lem_cell_ind:
+                self.lem_cell_ind[lem] = {}
+            posVec = get_vector(str(ind), self.posMat_mapped)
+            n = topn
+            bestCells = self.cellPosMat_mapped.wv.similar_by_vector(posVec, topn=topn)
+            bestCell = self.cellInd_cell[int(bestCells[0][0])]
+            self.ind_bestCells[ind] = {self.cellInd_cell[int(x[0])]:True for x in bestCells}
+
+            # prohibit orthographic over abundance.. revisit later for unstandardized spelling
+            if prohibit_over_abundance:
+                if bestCell in self.lem_cell_ind[lem]:
+                    averted_over_abundance += 1
+                while bestCell in self.lem_cell_ind[lem]:
+                    try:
+                        bestCells.pop(0)
+                        bestCell = self.cellInd_cell[int(bestCells[0][0])]
+                    except IndexError:
+                        print('Over abundance prohibited us from finding a cell match within the first {} attempted form -> cell mappings'.format(str(n)))
+                        n += topn
+                        bestCells = self.cellPosMat_mapped.wv.similar_by_vector(posVec, topn=n)[n-topn:]
+                        bestCell = self.cellInd_cell[int(bestCells[0][0])]
+
+
+            # Having identified the best cell, make the assignments
+            self.cell_wf[bestCell][wf] = True
+            self.cell_ind[bestCell][ind] = True
+            self.ind_cell[ind] = bestCell
+            if wf not in self.wf_cell:
+                self.wf_cell[wf] = {}
+            self.wf_cell[wf][bestCell] = True
+            if bestCell not in self.lem_cell_ind:
+                self.lem_cell_ind[lem][bestCell] = {}
+                self.lem_cell_ind[lem][bestCell][ind] = True
+
+        print('Changed best cell {} times out of {} to avoid over abundance'.format(str(averted_over_abundance), str(len(self.ind_cell))))
+
+
+    def assignCells_DMmap(self, distance_function, D1=None, D2=None, embeddings=None, debug=False, alpha=None, bias=1, gpu=False):
+
+        self.DMmap(distance_function, D1=D1, D2=D2, embeddings=embeddings, debug=debug, alpha=alpha, bias=bias, gpu=gpu)
+        self.DMmap_assign(self)
+        self.get_cellMates()
+
+
+    def DMmap(self, distance_function, D1=None, D2=None, embeddings=None, debug=False, alpha=None, bias=1, gpu=False):
+
+        # get distance metrics
+        self.distMat, embeddings = self.get_distance_matrix(distance_function, D1=D1, D2=D2, embeddings=embeddings, alpha=alpha, bias=bias)
+
+        # if bias == 1:
+        #     EXP_ID = '{}_{}-{}-{}'.format(distance_function, str(D1), str(D2), str(alpha))
+        # else:
+        #     EXP_ID = '{}_{}-{}-{}-bias{}'.format(distance_function, str(D1), str(D2), str(alpha), str(bias))
+
+        # 1) self.cellDistMat = cXc matrix of gold skeleton cell feature dissimilarities
+            # where c is the number of cells
+        self.get_cell_distance_matrix()
+
+        # 2) self.cellPosMat = embed_distMat(self.cellDistMat, c)
+            # cXc positional matrix derived from the distance matrix self.cellDistMat
+        self.cellPosMat = embed_distMat(self.cellDistMat, len(self.cellDistMat))
+
+        # 3) self.posMat = embed_distMat(self.distMat, c)
+            # nXc positional matrix where n is the vocabulary size
+        posMatDat = '{}.{}_posMatrix.dat'.format(UNIMORPH_LG, EXP_ID)
+        ### Check if the positional embeddings have already been computed
+        try:
+            self.posMat = np.load(posMatDat)
+        ### If not, compute them
+        except FileNotFoundError:
+            self.posMat = embed_distMat(self.distMat, len(self.cellDistMat))
+            with open(posMatDat, 'wb') as outfile:
+                np.save(outfile, self.posMat)
+
+        # 4) self.posMat_cellMapped = MUSE(self.posMat, self.cellPosMat)
+            # self.posMat mapped into self.cellPosMat's embedding space via linear transformation
+        ### Get locations of relevant matrices to perform mapping
+        srcMatVec = '{}.{}_posMatrix.vec'.format(UNIMORPH_LG, EXP_ID)
+        tgtMatVec = '{}.{}_cellPosMatrix.vec'.format(UNIMORPH_LG, EXP_ID)
+        ### Get relevant output locations
+        # os.system('mkdir -p {}/{}/{}'.format(MAPPING_DIR, LG, EXP_ID))
+        posMat_mapped = os.path.join(MAPPING_DIR, LG, EXP_ID, 'posMat_mapped.bin')
+        cellPosMat_mapped = os.path.join(MAPPING_DIR, LG, EXP_ID, 'cellPosMat_mapped.bin')
+        bestMap = os.path.join(MAPPING_DIR, LG, EXP_ID, 'map.pth')
+        ### Check if the outputs have already been precomputed
+        try:
+            self.posMat_mapped = loadVectors(posMat_mapped, model='w2v', binary=True)
+            self.cellPosMat_mapped = loadVectors(cellPosMat_mapped, model='w2v', binary=True)
+            self.bestMap = bestMap
+        ### If not, perform the relevant embedding mapping
+        except (FileNotFoundError, NotADirectoryError):
+            # Run MUSE to map embedding spaces
+            self.posMat_mapped, self.cellPosMat_mapped, self.bestMap = MUSE(self.posMat, srcMatVec, self.cellPosMat, tgtMatVec, [MAPPING_DIR, LG, EXP_ID], posMat_mapped, cellPosMat_mapped, gpu=gpu)
+
+
+    def DMmap_assign(self, prohibit_over_abundance=False):
+
+        # 5) assign inds and wfs to cells based on NN function, with constraints against:
+            # over abundance
+            # infeasible paradigm shapes according to self.metaParadigms?
+        self.cell_wf = {}
+        self.wf_cell = {}
+        self.ind_cell = {}
+        self.cell_ind = {}
+        self.lem_cell_ind = {} # watch out for over abundance
+        averted_over_abundance = 0
+        for cell in self.allCells:
+            self.cell_wf[cell] = {}
+            self.cell_ind[cell] = {}
+        for ind in range(len(self.posMat)):
+            wf = self.ind_wf[ind]
+            lem = self.ind_lem[ind]
+            if lem not in self.lem_cell_ind:
+                self.lem_cell_ind[lem] = {}
+            posVec = get_vector(str(ind), self.posMat_mapped)
+            origN = 5
+            n = origN
+            bestCells = self.cellPosMat_mapped.wv.similar_by_vector(posVec, topn=n)
+            bestCell = self.cellInd_cell[int(bestCells[0][0])]
+
+
+            # prohibit orthographic over abundance.. revisit later for unstandardized spelling
+            if prohibit_over_abundance:
+                if bestCell in self.lem_cell_ind[lem]:
+                    averted_over_abundance += 1
+                while bestCell in self.lem_cell_ind[lem]:
+                    try:
+                        bestCells.pop(0)
+                        bestCell = self.cellInd_cell[int(bestCells[0][0])]
+                    except IndexError:
+                        print('Over abundance prohibited us from finding a cell match within the first {} attempted form -> cell mappings'.format(str(n)))
+                        n += origN
+                        bestCells = self.cellPosMat_mapped.wv.similar_by_vector(posVec, topn=n)[n-origN:]
+                        bestCell = self.cellInd_cell[int(bestCells[0][0])]
+
+
+            # Having identified the best cell, make the assignments
+            self.cell_wf[bestCell][wf] = True
+            self.cell_ind[bestCell][ind] = True
+            self.ind_cell[ind] = bestCell
+            if wf not in self.wf_cell:
+                self.wf_cell[wf] = {}
+            self.wf_cell[wf][bestCell] = True
+            if bestCell not in self.lem_cell_ind:
+                self.lem_cell_ind[lem][bestCell] = {}
+                self.lem_cell_ind[lem][bestCell][ind] = True
+
+        print('Changed best cell {} times out of {} to avoid over abundance'.format(str(averted_over_abundance), str(len(self.ind_cell))))
+
+
+    def get_lemPosMat(self, embeddings):
+
+        ### get average embedding for each paradigm
+        self.lemPosMat = []
+        self.lem_lemInd = {}
+        self.lemInd_lem = {}
+
+        eligibleLems = list(self.lem_wf)
+        eligibleLems.sort()
+        l = len(eligibleLems)
+        dim = dimensionality(embeddings)
+
+        lemInd = -1
+        for lem in eligibleLems:
+            lemInd += 1
+            self.lem_lemInd[lem] = lemInd
+            self.lemInd_lem[lemInd] = lem
+            self.lemPosMat.append(stat_tracker(type='array', len=dim))
+            for wf in self.lem_wf[lem]:
+                self.lemPosMat[-1].add_instance(get_vector(wf, embeddings))
+        for q in range(len(self.lemPosMat)):
+            self.lemPosMat[q].normalize()
+            self.lemPosMat[q] = self.lemPosMat[q].mean
+
+        ### get distances between paradigms' average embeddigns
+        # self.lemDistMat = 1-pairwise_distances(self.lemPosMat, metric="cosine")
+
+
+    def get_distance_matrix(self, distance_function, embeddings=None, D1= None, D2=None, alpha=None, bias=1):
+
+        ### Make sure distance function is supported
+        if distance_function not in ['lev', 'weightedLev', 'cosine', 'cosine_par', 'interpolated']:
+            print('UNSUPPORTED DISTANCE METRIC: {}'.format(distance_function))
+            exit()
+
+        ### Get distance matrix filename
+        if distance_function == 'interpolated':
+            if bias == 1:
+                filename = '{}.{}_{}-{}-{}_distMatrix.dat'.format(UNIMORPH_LG, distance_function, D1, D2, str(alpha))
+            else:
+                filename = '{}.{}_{}-{}-{}-bias{}_distMatrix.dat'.format(UNIMORPH_LG, distance_function, D1, D2, str(alpha), str(bias))
+        else:
+            if distance_function == 'weightedLev' and bias != 1:
+                filename = '{}.{}-bias{}_distMatrix.dat'.format(UNIMORPH_LG, distance_function, str(bias))
+            else:
+                filename = '{}.{}_distMatrix.dat'.format(UNIMORPH_LG, distance_function)
+
+        ### Check if distance matrix has been precomputed
+        n = len(self.ind_wf)
         try:
             print('Checking for cached {}x{} {} distance matrix'.format(str(n), str(n), distance_function))
             # matrix1 = np.memmap(filename, dtype='float64', mode='r', shape=(n, n))
             matrix = np.load(filename)
 
+        ### Begin building distance matrix
         except FileNotFoundError:
 
-            print('Building {}x{} {} distance matrix'.format(str(n), str(n), distance_function))
+            print('None found.. Building {}x{} {} distance matrix'.format(str(n), str(n), distance_function))
             matrix = np.array([[0.0]*n]*n)
 
+            ### Gather prerequisite data to inform distance matrix
             if distance_function == 'interpolated':
-                D1, embeddings = self.get_distance_matrix(D1, embeddings=embeddings)
-                D2, embeddings = self.get_distance_matrix(D2, embeddings=embeddings)
-
-            elif distance_function == 'cosine':
+                ### composite distance matrices to be interpolated
+                D1, embeddings = self.get_distance_matrix(D1, embeddings=embeddings, bias=bias)
+                D2, embeddings = self.get_distance_matrix(D2, embeddings=embeddings, bias=bias)
+                ### load word embeddings
+            elif distance_function in ['cosine', 'cosine_par']:
                 print('Loading word embeddings from {}'.format(embeddings))
                 embeddings = loadVectors(embeddings)
+                ### get paradigm--paradigm distance matrix
+                if distance_function == 'cosine_par':
+                    self.get_lemPosMat(embeddings)
+                    self.p2_wf1_p1 = {}
+                    self.wf1_p1 = {}
 
-
+            ### Track progress
             increment = 100/n 
             progress = 0.0
             origCheckPoint = 0.1
@@ -557,10 +1077,10 @@ class ANA:
                     checkPoint += origCheckPoint
 
                 for j in range(i+1, n):
-                    wf1 = self.ind2wf[i]
-                    wf2 = self.ind2wf[j]
-                    p1 = self.ind2lem[i]
-                    p2 = self.ind2lem[j]
+                    wf1 = self.ind_wf[i]
+                    wf2 = self.ind_wf[j]
+                    p1 = self.ind_lem[i]
+                    p2 = self.ind_lem[j]
 
                     if p1 == p2:
                         distance = 1
@@ -569,11 +1089,13 @@ class ANA:
 
                         ### get pairwise distance
                         if distance_function == 'weightedLev':
-                            distance = 1 - self.get_likelihood_cell_mate(p1, wf1, p2, wf2)
+                            distance = 1 - self.get_likelihood_cellMate_weighted(p1, wf1, p2, wf2)
                         elif distance_function == 'lev':
-                            distance = 1 - self.get_likelihood_cell_mate_control(p1, wf1, p2, wf2)
+                            distance = 1 - self.get_likelihood_cellMate_unweighted(p1, wf1, p2, wf2)
                         elif distance_function == 'cosine':
                             distance = cosDist(wf1, wf2, embeddings)
+                        elif distance_function == 'cosine_par':
+                            distance = self.get_parConditional_cosDist(wf1, wf2, p1, p2, embeddings)
                         elif distance_function == 'interpolated':
                             distance = interpolate(D1[i][j], D2[i][j], alpha)
                         else:
@@ -590,376 +1112,106 @@ class ANA:
         return matrix, embeddings
 
 
-    def cluster_cell_medoids(self, distance_function, debug=False, embeddings=None, D1=None, D2=None, alpha=None):  # TO ADD: CHANGE K-MEDOID CLUSTERING OUTPUT TO A SOFTMAX DISTRIBUTION TO FACILITATE DOWNSTREAM CELL REASSIGNMENTS
-
-        # get distance metrics
-        print('Getting {} distance matrix'.format(distance_function))
-
-        if distance_function == 'interpolated':
-            dist_matrix, embeddings = self.get_distance_matrix('interpolated', D1=D1, D2=D2, alpha=alpha, embeddings=embeddings)
-        elif distance_function == 'weightedLev':
-            dist_matrix, embeddings = self.get_distance_matrix('weightedLev')
-        elif distance_function == 'lev':
-            dist_matrix, embeddings = self.get_distance_matrix('lev')
-        elif distance_function == 'cosine':
-            dist_matrix, embeddings = self.get_distance_matrix('cosine', embeddings=embeddings)
-        else:
-            print('UNSUPPORTED DISTANCE METRIC {}'.format(distance_function))
-            exit()
-
-
-
-        ### DEBUG: WLEV_DIST_MAT IS STILL TOO BIASED TOWARD SIMILAR BASES.. COULD OUTPUT POSTERIOR PROB AND THEN GO THROUGH ENFORCING NO OVERABUNDANCE.. OR COULD FIX THIS BY MAKING CELLMATE DECISIONS ON A PARADIGM-PARADIGM BASIS
-        # k-medoid clustering of distance metrics
-        print('K-medoid clustering {} distance matrix'.format(distance_function))
-        M, self.medoid_ind = kMedoids(dist_matrix, len(self.total_coordinates))
-        # medoid_ind is a dictionary from cluster labels to an array of member ind's
-        # M is a list of medoid-center ind's with indeces corresponding to cluster labels
-
-        cluster2wf = {}
-        wf2cluster = {}
-        for cluster in self.medoid_ind:
-            if debug:
-                print('Cluster {}'.format(str(cluster)))
-            cluster2wf[cluster] = {}
-            for ind in self.medoid_ind[cluster]:
-                wf = self.ind2wf[ind]
-                cluster2wf[cluster][wf] = True
-                if wf not in wf2cluster:
-                    wf2cluster[wf] = {}
-                wf2cluster[wf][cluster] = True
-                lem = self.ind2lem[ind]
-                if debug:
-                    print('\t{}\t{} <- {}'.format(str('\n\t'.join(list('  '.join(x) for x in self.GOLD_data[lem][wf]))), wf, lem))
-        if debug:
-            print('\n')
-
-        cellMates = get_cellMates_final(cluster2wf, wf2cluster)
-
-        return cellMates, dist_matrix, embeddings
-
-
-    def swapMedoids(self, dist_matrix):
-
-        ### look for the most dissonant medoids
-            ## keep swapping from bottom until we get to one that can't be improved
-        first_unfixed = -1
-        while first_unfixed < len(self.most_dissonant_cells) -1:
-            first_unfixed += 1
-            improved = False
-            foundImprovement = True
-            while foundImprovement:
-                cell1 = self.most_dissonant_cells[first_unfixed][1]
-                diss1 = self.most_dissonant_cells[first_unfixed][0]
-                medoid1 = self.cell_medoid[cell1]
-                maxGains = 0
-                bestSwap = None # [[cell1,cell2], HIDs, HCDs]
-                for mdcInd in range(first_unfixed+1, len(self.most_dissonant_cells)):
-                    c2 = self.most_dissonant_cells[mdcInd]
-                    cell2 = c2[1]
-                    diss2 = c2[0]
-                    gains = sum([diss1, diss2])
-                    # check if the swap will
-                        # decrease both dissonances
-
-                    HIDs, HCDs = self.get_hypothetical_ind_dissonance(cell1, cell2, dist_matrix)
-
-                    gains -= sum([HCDs[cell2].cohesion, HCDs[cell1].cohesion])
-                    if gains > maxGains:
-                        # print('Found a new best swap for cell {}:  cell {}'.format(cell1, cell2))
-                        maxGains = gains 
-                        bestSwap = [[cell1, cell2], HIDs, HCDs, mdcInd]
-
-
-
-                if bestSwap == None:
-                    foundImprovement = False
-
-                else:
-                    ### swapping medoids requires switching:
-                        # cell_ind, ind_cell, 
-                        # cell_medoid, medoid_cell
-                        # ind_dissonance, cell_dissonance
-                        # most_dissonant_cells
-
-                    improved = True
-                    cell1 = bestSwap[0][0]
-                    cell2 = bestSwap[0][1]
-                    HIDs = bestSwap[1]
-                    HCDs = bestSwap[2]
-                    mdcInd = bestSwap[3]
-                    medoid1 = self.cell_medoid[cell1]
-                    medoid2 = self.cell_medoid[cell2]
-                    print('Swapping medoids at {}; {} (-{}% absolute dissonance)'.format(cell1, cell2, str(round(100*maxGains, 3))))
-                    # cell dissonance
-                    self.cell_dissonance[cell1] = HCDs[cell1]
-                    self.cell_dissonance[cell2] = HCDs[cell2]
-                    # most dissonant cells
-                    self.most_dissonant_cells[first_unfixed] = [HCDs[cell1].cohesion, cell1]
-                    self.most_dissonant_cells[mdcInd] = [HCDs[cell2].cohesion, cell2]
-
-                    for ind in HIDs:
-                        # get original and new cells
-                        origCell = self.ind_cell[ind]
-                        if origCell == cell1:
-                            cell = cell2 
-                        else:
-                            assert origCell == cell2 
-                            cell = cell1
-                        medoid = self.ind_medoid[ind]
-
-                        # ind cell mapping
-                        self.ind_cell[ind] = cell
-                        del self.cell_ind[origCell][ind]
-                        self.cell_ind[cell][ind] = True
-                        # medoid cell mapping
-                        self.medoid_cell[medoid] = cell
-                        self.cell_medoid[cell] = medoid
-                        # ind dissonance
-                        self.ind_dissonance[ind] = HIDs[ind]
-
-
-
-
-            print('Fixed {} of {} medoids in their respective cells'.format(str(first_unfixed+1), str(len(self.most_dissonant_cells))))
-            coordinates = self.most_dissonant_cells[first_unfixed-1][1]
-            fts = get_MSP_from_coord(self.GOLD_skeleton, coordinates)
-            print('\tNewest fixed cell: {}'.format(fts)) # == {}'.format(coordinates, fts))
-
-            if first_unfixed < len(self.most_dissonant_cells) -1 and improved:
-                self.get_ind_dissonance(dist_matrix)
-
-        return self.get_cellMates_final()
-
-
-    def cell_mapping_and_word_reassignment(self, dist_matrix):
-
-        self.assignMedoid_random(dist_matrix)
-        ### debug secondary eval cell prediction
-        self.get_cell_wf()
-        cellF_rand = self.evalFull()
-
-        cellMates = self.swapMedoids(dist_matrix)
-        ### debug secondary eval cell prediction
-        self.get_cell_wf()
-        cellF_swappedMedoids = self.evalFull()
-
-
-        ### when medoids swap
-            ## cohesion and silhoette remain unchanged
-            ## all ind_fitnesses need to be recalculated
-        ### when inds get reassigned
-            ## reaveraging of medoid cohesion is trivial
-            ## reaveraging of cell_fitness is trivial if
-                # we ignore the affects on ind2s in m of moving ind1 to related cell
-            ## ind_silhoette must be recalculated in new cell for ind1
-            ## ind_silhoette of ind2s should be adjusted to account for ind1s absence
-            ## ind_fitness must be recalculated for ind1 in new cell
-            ## ind_fitness can be trivially ignored if
-                # we ignore affects on ind2s in m of moving ind1 to related cell
-
-        ### To make it tractable and to introduce some potentially helpful noise, we can sample to calculate fitness and silhoettes, recalculating after each epoch
-
-        ### medoids will be swapped when it improves cell_fitness for both
-
-        ### inds will be reassigned when ind_fitness improvement outweighs the loss in medoid cohesion
-
-        ### ind_fitness should be a function of the proportion of members whose nearest medoid occupies a feature sharing cell
-
-        return cellMates, cellF_rand, cellF_swappedMedoids
-
-
-    def assignMedoid_random(self, dist_matrix):
-
-        self.cell_ind = {}
-        self.ind_cell = {}
-        self.feat_cell = {}
-        self.medoid_cell = {}
-        self.cell_medoid = {}
-        self.ind_medoid = {}
-
-        random_cells = list(self.total_coordinates)
-        random.shuffle(random_cells)
-
-        for medoid in self.medoid_ind:
-            cell = random_cells.pop()
-            fts = cell.split(',')
-            fts = list('{},{}'.format(str(i), fts[i]) for i in range(len(fts)))
-            for ft in fts:
-                if ft not in self.feat_cell:
-                    self.feat_cell[ft] = {}
-                self.feat_cell[ft][cell] = True
-
-            for ind in self.medoid_ind[medoid]:
-
-                self.medoid_cell[medoid] = cell
-                self.ind_medoid[ind] = medoid
-                self.cell_medoid[cell] = medoid
-                self.ind_cell[ind] = cell
-                if cell not in self.cell_ind:
-                    self.cell_ind[cell] = {}
-                self.cell_ind[cell][ind] = True
-
-        assert len(random_cells) == 0
-
-        ### calculate index silhoettes
-        self.get_ind_silhoette(dist_matrix)
-        ### calculate medoid cohesion
-        self.get_medoid_cohesion()
-        ### calculate ind dissonance
-        self.get_ind_dissonance(dist_matrix)
-        ### calculate cell dissonance
-        self.get_cell_dissonance()
-
-
-    def get_ind_silhoette(self, dist_matrix):
-        print('Getting index silhoettes')
-        label_vector = np.array([0]*len(dist_matrix))
-        for label in self.medoid_ind:
-            for ind in self.medoid_ind[label]:
-                label_vector[ind] = label
-        self.ind_silhoette = silhouette_samples(dist_matrix, label_vector, metric='precomputed')
-
-        self.least_cohesive_inds = []
-        for ind in range(len(self.ind_silhoette)):
-            self.least_cohesive_inds.append([self.ind_silhoette[ind], ind])
-        self.least_cohesive_inds.sort()
-
-
-    def get_medoid_cohesion(self):
-        print('Calculating medoid cohesion')
-        self.medoid_cohesion = {}  # average of composite silhoettes
-        for ind in range(len(self.ind_silhoette)):
-            medoid = self.ind_medoid[ind]
-            if medoid not in self.medoid_cohesion:
-                self.medoid_cohesion[medoid] = fitness_tracker()
-                self.medoid_cohesion[medoid].addSil(self.ind_silhoette[ind])
-        for medoid in self.medoid_cohesion:
-            self.medoid_cohesion[medoid].normSil()
-
-        self.least_cohesive_medoids = []
-        for medoid in self.medoid_cohesion:
-            self.least_cohesive_medoids.append([self.medoid_cohesion[medoid].cohesion, medoid])
-        self.least_cohesive_medoids.sort()
-
-
-    def get_hypothetical_ind_dissonance(self, cell1, cell2, dist_matrix):
-
-        hypothetical_ind_dissonance = {}
-        hypothetical_cell_dissonance = {}
-
-        for ind1 in self.cell_ind[cell1]:
-            hypothetical_ind_dissonance[ind1] = fitness_tracker()
-        for ind2 in self.cell_ind[cell2]:
-            hypothetical_ind_dissonance[ind2] = fitness_tracker()
-        newCell1 = cell2 
-        newCell2 = cell1
-        hypothetical_cell_dissonance[newCell1] = fitness_tracker()
-        hypothetical_cell_dissonance[newCell2] = fitness_tracker()
-
-        fts1 = set(self.strCoord_lstCoord[newCell1])
-        fts2 = set(self.strCoord_lstCoord[newCell2])
-        multiplier = len(fts1.intersection(fts2))
-        if multiplier > 0:
-            for ind1 in self.cell_ind[cell1]:
-                for ind2 in self.cell_ind[cell2]:
-                    hypothetical_ind_dissonance[ind1].multSil(multiplier, dist_matrix[ind1][ind2])
-                    hypothetical_ind_dissonance[ind2].multSil(multiplier, dist_matrix[ind1][ind2])
-
-        for cell3 in self.cell_ind:
-            if cell3 not in (newCell1, newCell2):
-                fts3 = self.strCoord_lstCoord[cell3]
-
-                multiplier1 = len(fts1.intersection(fts3))
-                if multiplier1 > 0:
-                    for ind1 in self.cell_ind[cell1]:
-                        for ind3 in self.cell_ind[cell3]:
-                            hypothetical_ind_dissonance[ind1].multSil(multiplier, dist_matrix[ind1][ind3])
-
-                multiplier2 = len(fts2.intersection(fts3))
-                if multiplier2 > 0:
-                    for ind2 in self.cell_ind[cell2]:
-                        for ind3 in self.cell_ind[cell3]:
-                            hypothetical_ind_dissonance[ind2].multSil(multiplier, dist_matrix[ind2][ind3])
-
-
-        for ind1 in self.cell_ind[cell1]:
-            hypothetical_ind_dissonance[ind1].normSil()
-            hypothetical_cell_dissonance[newCell1].addSil(hypothetical_ind_dissonance[ind1].cohesion)
-        hypothetical_cell_dissonance[newCell1].normSil()
-
-        for ind2 in self.cell_ind[cell2]:
-            hypothetical_ind_dissonance[ind2].normSil()
-            hypothetical_cell_dissonance[newCell2].addSil(hypothetical_ind_dissonance[ind2].cohesion)
-        hypothetical_cell_dissonance[newCell2].normSil()
-
-        return hypothetical_ind_dissonance, hypothetical_cell_dissonance
-
-
-    def get_ind_dissonance(self, dist_matrix):
-
-
-        print('Calculating index dissonance')
-        self.ind_dissonance = {}  # how well ind fits with related cells
-
-        for ind in range(len(dist_matrix)):
-            self.ind_dissonance[ind] = fitness_tracker()
-
-        all_cells = list(self.cell_ind)
-        all_cells.sort()
-        for c1 in range(len(all_cells)):
-            cell1 = all_cells[c1]
-            fts1 = set(self.strCoord_lstCoord[cell1])
-            for c2 in range(c1+1, len(all_cells)):
-                cell2 = all_cells[c2]
-                fts2 = set(self.strCoord_lstCoord[cell2])
-                multiplier = len(fts1.intersection(fts2))
-                if multiplier > 0:
-                    for ind1 in self.cell_ind[cell1]:
-                        for ind2 in self.cell_ind[cell2]:
-                            self.ind_dissonance[ind1].multSil(multiplier, dist_matrix[ind1][ind2])
-                            self.ind_dissonance[ind2].multSil(multiplier, dist_matrix[ind1][ind2])
-
-        for ind in range(len(dist_matrix)):
-            self.ind_dissonance[ind].normSil()
-
-        self.most_dissonant_inds = []
-        for ind in self.ind_dissonance:
-            self.most_dissonant_inds.append([self.ind_dissonance[ind].cohesion, ind])
-        self.most_dissonant_inds.sort(reverse=True)
-
-
-    def get_cell_dissonance(self):
-        print('Calculating cell dissonance')
-        self.cell_dissonance = {}  # average of composite fitness values
-        for ind in self.ind_dissonance:
-            self.ind_dissonance[ind].normSil()
-            cell = self.ind_cell[ind]
-            if cell not in self.cell_dissonance:
-                self.cell_dissonance[cell] = fitness_tracker()
-            self.cell_dissonance[cell].addSil(self.ind_dissonance[ind].cohesion)
-        for cell in self.cell_dissonance:
-            self.cell_dissonance[cell].normSil()
-
-        self.most_dissonant_cells = []
-        for cell in self.cell_dissonance:
-            self.most_dissonant_cells.append([self.cell_dissonance[cell].cohesion, cell])
-        self.most_dissonant_cells.sort(reverse=True)
-
-
-    def get_cell_wf(self):
-
-        self.cell_wf = {}
-
-        for cell in self.cell_ind:
-            if cell not in self.cell_wf:
-                self.cell_wf[cell] = {}
-            for ind in self.cell_ind[cell]:
-                wf = self.ind2wf[ind]
-                self.cell_wf[cell][wf] = True
-
-
-    def evalFull(self):
+    def get_parConditional_cosDist(self, wf1, wf2, p1, p2, embeddings):
+
+        try:
+            analVec = self.p2_wf1_p1[p2][wf1][p1]
+        except KeyError:
+            try:
+                B = self.wf1_p1[wf1][p1]
+                l2 = self.lem_lemInd[p2]
+                l2vec = self.lemPosMat[l2]
+                analVec = l2vec + B
+
+                if p2 not in self.p2_wf1_p1:
+                    self.p2_wf1_p1[p2] = {}
+                if wf1 not in self.p2_wf1_p1[p2]:
+                    self.p2_wf1_p1[p2][wf1] = {}
+                self.p2_wf1_p1[p2][wf1][p1] = analVec 
+
+            except KeyError:
+                l1 = self.lem_lemInd[p1]
+                l2 = self.lem_lemInd[p2]
+                l1vec = self.lemPosMat[l1]
+                l2vec = self.lemPosMat[l2]
+                wf1vec = get_vector(wf1, embeddings)
+
+                B = wf1vec - l1vec
+                if wf1 not in self.wf1_p1:
+                    self.wf1_p1[wf1] = {}
+                self.wf1_p1[wf1][p1] = B 
+
+                analVec = l2vec + B
+
+                if p2 not in self.p2_wf1_p1:
+                    self.p2_wf1_p1[p2] = {}
+                if wf1 not in self.p2_wf1_p1[p2]:
+                    self.p2_wf1_p1[p2][wf1] = {}
+                self.p2_wf1_p1[p2][wf1][p1] = analVec  
+
+        wf2vec = get_vector(wf2, embeddings)
+        dist = 1 - ( (cosine_similarity([analVec],[wf2vec])[0][0] + 1) / 2 )
+        
+        return dist
+
+
+    def get_likelihood_cellMate_weighted(self, p1, wf1, p2, wf2):
+
+        # for both words, for every char in word
+            # add condExpWeight to denominator
+        # for every matched char, for both words,
+            # add condExpWeight to numerator
+
+        ### comment this out to promote overabundance in weightedLev metric
+        if p1 == p2:
+            return 0.0
+
+        # get all matched blocks
+        blocks = lv.matching_blocks(lv.editops(''.join(wf1), ''.join(wf2)), len(wf1), len(wf2))
+
+        # mark which characters matched
+        match1 = [False] * len(wf1)
+        match2 = [False] * len(wf2)
+        for match in blocks:
+            for i in range(match[0], match[0]+match[2]):
+                match1[i] = True
+            for i in range(match[1], match[1]+match[2]):
+                match2[i] = True
+
+        # sum numerator and denominator
+        numerator = 0.0
+        denominator = 0.0000001
+        # over word 1
+        for i in range(len(match1)):
+            ch = wf1[i]
+            denominator += self.condExpWeight[p1][ch]
+            if match1[i]:
+                numerator += self.condExpWeight[p1][ch]
+        # over word 2
+        for i in range(len(match2)):
+            ch = wf2[i]
+            denominator += self.condExpWeight[p2][ch]
+            if match2[i]:
+                numerator += self.condExpWeight[p2][ch]
+
+        similarity = numerator/denominator
+        
+        return similarity
+
+
+    def get_likelihood_cellMate_unweighted(self, p1, wf1, p2, wf2):
+
+        numerator = 0
+        denominator = len(wf1) + len(wf2)
+        blocks = lv.matching_blocks(lv.editops(''.join(wf1), ''.join(wf2)), len(wf1), len(wf2))
+        for match in blocks:
+            for i in range(match[0], match[0]+match[2]):
+                numerator += 2
+
+        return numerator/denominator
+
+
+    def evalFull(self, debug=False):
 
         numer = 0
         denom = 0
@@ -987,7 +1239,45 @@ class ANA:
                 maxF = F
 
             numer += weight * F 
-            denom += weight 
+            denom += weight
+
+            if debug:
+
+                print('\n\n{}\t{} F-score'.format(get_MSP_from_cell(self.GOLD_skeleton, cell), str(round(F, 2))))
+
+                precErrors = {}
+                precErrorFts = {}
+                precErrors = predicted - correct
+                for wf in precErrors:
+                    for lem in self.wf_lem[wf]:
+                        for fts in ana.GOLD_lem_wf_lstFtlists[lem][wf]:
+                            fts = ';'.join(fts)
+                            if fts not in precErrorFts:
+                                precErrorFts[fts] = 0
+                            precErrorFts[fts] += 1
+
+                recErrors = {}
+                recErrorFts = {}
+                recErrors = actual - correct
+                for wf in recErrors:
+                    for lem in self.wf_lem[wf]:
+                        for fts in ana.GOLD_lem_wf_lstFtlists[lem][wf]:
+                            fts = ';'.join(fts)
+                            if fts not in recErrorFts:
+                                recErrorFts[fts] = 0
+                            recErrorFts[fts] += 1
+
+                rankedPrecErrorFts = list(zip(list(precErrorFts.values()), list(precErrorFts.keys())))
+                rankedPrecErrorFts.sort(reverse=True)
+                rankedPrecErrorFts = '  '.join('{}_({})'.format(l[1], str(l[0])) for l in rankedPrecErrorFts)
+
+                rankedRecErrorFts = list(zip(list(recErrorFts.values()), list(recErrorFts.keys())))
+                rankedRecErrorFts.sort(reverse=True)
+                rankedRecErrorFts = '  '.join('{}_({})'.format(l[1], str(l[0])) for l in rankedRecErrorFts)
+
+                print('\tCORRECT:\n{}'.format(', '.join(list(correct))))
+                print('\tPREC ERRORS:\n{}\n{}'.format(rankedPrecErrorFts, ', '.join(list(precErrors))))
+                print('\tREC ERRORS:\n{}\n{}'.format(rankedRecErrorFts, ', '.join(list(recErrors))))
 
         macroF = numer / denom
         strMacroF = str(round(macroF, 3))
@@ -999,39 +1289,35 @@ class ANA:
         return macroF
 
 
-    def get_cellMates_final(self):
+    def get_ind_silhoette(self):
+        print('Getting index silhoettes')
+        label_vector = np.array([0]*len(self.distMat))
+        for label in self.cell_ind:
+            for ind in self.cell_ind[label]:
+                label_vector[ind] = label
+        self.ind_silhoette = silhouette_samples(self.distMat, label_vector, metric='precomputed')
 
-        cellMates = {wf:{} for wf in self.wf2ind}
+        self.least_cohesive_inds = []
+        for ind in range(len(self.ind_silhoette)):
+            self.least_cohesive_inds.append([self.ind_silhoette[ind], ind])
+        self.least_cohesive_inds.sort()
 
-        increment = 100/len(self.cell_ind)
-        progress = 0
-        nextTen = 10
 
-        print('Getting cellMates from an array')
-        for cell in self.cell_ind:
-            progress += increment
+    def get_cell_cohesion(self):
+        print('Calculating cell cohesion')
+        self.cell_cohesion = {}  # average of composite silhoettes
+        for ind in range(len(self.ind_silhoette)):
+            cell = self.ind_cell[ind]
+            if cell not in self.cell_cohesion:
+                self.cell_cohesion[cell] = stat_tracker()
+                self.cell_cohesion[cell].add_instance(self.ind_silhoette[ind])
+        for cell in self.cell_cohesion:
+            self.cell_cohesion[cell].normalize()
 
-            to_add = {}
-            for ind in self.cell_ind[cell]:
-                to_add[self.ind2wf[ind]] = True
-
-            wfs = dict(to_add)
-            for wf1 in wfs:
-                del to_add[wf1]
-                for wf2 in to_add:
-                    cellMates[wf1][wf2] = True 
-                    cellMates[wf2][wf1] = True
-            if progress > nextTen:
-                print('\t{}% complete getting cellMates'.format(round(progress, 3)))
-                nextTen += 10
-
-            for wf in cellMates:
-                try:
-                    del cellMates[wf][wf]
-                except KeyError:
-                    pass
-
-        return cellMates
+        self.least_cohesive_cells = []
+        for cell in self.cell_cohesion:
+            self.least_cohesive_cells.append([self.cell_cohesion[cell].cohesion, cell])
+        self.least_cohesive_cells.sort()
 
 
 ###################################################################################
@@ -1041,6 +1327,14 @@ def ncr(n, r):
     denom = reduce(op.mul, range(1, r+1), 1)
     return numer / denom
 
+def embed_distMat(dist_matrix, dim):
+    mds = manifold.MDS(n_components=dim, dissimilarity="precomputed")
+    results = mds.fit(dist_matrix)
+
+    posMat = results.embedding_
+
+    return posMat
+    
 def interpolate(v1, v2, alpha):
     value = alpha*v1 + (1-alpha)*v2
     return value
@@ -1049,15 +1343,15 @@ def print_sample_paradigms(ana, limit, output):
 
     output = open(output, 'w')
 
-    randLems = list(ana.GOLD_data)
+    randLems = list(ana.GOLD_lem_wf_lstFtlists)
     random.shuffle(randLems)
 
     try:
         limit = int(limit)
 
         for lem in randLems:
-            for wf in ana.GOLD_data[lem]:
-                for fts in ana.GOLD_data[lem][wf]:
+            for wf in ana.GOLD_lem_wf_lstFtlists[lem]:
+                for fts in ana.GOLD_lem_wf_lstFtlists[lem][wf]:
                     output.write('{}\t{}\t{}\n'.format(lem, wf, ';'.join(fts)))
                     limit -= 1
             if limit < 1:
@@ -1066,8 +1360,8 @@ def print_sample_paradigms(ana, limit, output):
     except:
 
         for lem in randLems:
-            for wf in ana.GOLD_data[lem]:
-                for fts in ana.GOLD_data[lem][wf]:
+            for wf in ana.GOLD_lem_wf_lstFtlists[lem]:
+                for fts in ana.GOLD_lem_wf_lstFtlists[lem][wf]:
                     if limit in fts:
                         output.write('{}\t{}\t{}\n'.format(lem, wf, ';'.join(fts)))
 
@@ -1075,212 +1369,90 @@ def print_sample_paradigms(ana, limit, output):
 
     exit()
 
-def eval(GOLD_cellMates, cellMates, ana, debug=False):
+def MUSE(srcMat, srcMatVec, tgtMat, tgtMatVec, mapping_dir, srcDest, tgtDest, gpu=False):
 
-    print('EVALUATING... (THIS MAY TAKE A HOT SEC)')
-    total = len(GOLD_cellMates)
-    increment = 100/total
+    ### Format vocabulary and cell, i.e., source and tgt matrices for MUSE
+    print('Formatting source embeddings for MUSE')
+    emb_dim = print_matrix_as_FTvec(srcMat, srcMatVec)
+    print('Formatting target embeddings for MUSE')
+    assert emb_dim == print_matrix_as_FTvec(tgtMat, tgtMatVec)
 
-    # take macro F score of cellMates over all forms in gold vocabulary
-    Fs = []
-    minF = 2
-    maxF = -1
-    counter = 0
-    nextTen = 10
-    for wf in GOLD_cellMates:
- 
-        try:
-            correctSet = set(GOLD_cellMates[wf]).intersection(set(cellMates[wf]))
-            correct = len(correctSet)
-        except IndexError:
-            correctSet = set()
-            correct = 0
+    ### Learn linear transformation from source to target embedding space
+    print('MUSE is learning a linear transformation from {} to {} embedding space'.format(srcMatVec.split('/')[-1].strip('.vec'), tgtMatVec.split('/')[-1].strip('.vec')))
+    # if gpu:
+    #     command = 'python {} --src_lang src --tgt_lang tgt --src_emb {} --tgt_emb {} --cuda {}, --emb_dim {} --exp_path {} --exp_name {} --exp_id {}'.format(os.path.join(ANA_DIR, 'MUSE/unsupervised_ANA.py'), srcMatVec, tgtMatVec, str(gpu), emb_dim, mapping_dir[0], mapping_dir[1], mapping_dir[2])
+    # else:
+    #     
+    command = 'python {} --src_lang src --tgt_lang tgt --src_emb {} --tgt_emb {} --emb_dim {} --exp_path {} --exp_name {} --exp_id {}'.format(os.path.join(ANA_DIR, 'MUSE/unsupervised_ANA.py'), srcMatVec, tgtMatVec, emb_dim, mapping_dir[0], mapping_dir[1], mapping_dir[2])
+    os.system(command)
 
-        if correct == 0:
-            F = 0
-        else:
-            predicted = len(cellMates[wf])
-            total_recall_with_Arnold_Schwarzeneggar = len(GOLD_cellMates[wf])
-            
-            prec = correct / predicted
-            rec = correct / total_recall_with_Arnold_Schwarzeneggar
-            F = 100*( (2 * prec * rec) / (prec + rec) )
+    ### Gather MUSE output
+    mapping_dir = os.path.join(mapping_dir[0], mapping_dir[1], mapping_dir[2])
+    best_mapping = os.path.join(mapping_dir, 'best_mapping.pth')
+    src_emb = os.path.join(mapping_dir, 'vectors-src.txt')
+    tgt_emb = os.path.join(mapping_dir, 'vectors-tgt.txt')
+    ### Load mapped embeddings
+    src_emb = loadVectors(src_emb, model='w2v', binary=False)
+    tgt_emb = loadVectors(tgt_emb, model='w2v', binary=False)
+    ### Save mapped embeddings
+    saveVectors(src_emb, srcDest, model='w2v', binary=True)
+    saveVectors(tgt_emb, tgtDest, model='w2v', binary=True)
 
-        if F < minF:
-            minF = F 
-        if F > maxF:
-            maxF = F
-        Fs.append(F)
+    return src_emb, tgt_emb, best_mapping
 
-        if debug:
+def print_matrix_as_FTvec(matrix, matrixVec):
 
-            correctFeats = {}
-            print('\n\n{}\t{} F-score'.format(wf, str(round(F, 2))))
-            for par in ana.wf2lem[wf]:
-                print('\tLemma {}'.format(par))
-                for fts in ana.GOLD_data[par][wf]:
-                    print('\t\t{}'.format(';'.join(fts)))
-                    correctFeats[';'.join(fts)] = True
+    matrixVec = open(matrixVec, 'w')
+    emb_dim = str(len(matrix[0]))
+    matrixVec.write('{} {}\n'.format(str(len(matrix)), emb_dim))
+    for ind in range(len(matrix)):
+        matrixVec.write('{} {}\n'.format(str(ind), ' '.join(str(round(x, 5)) for x in matrix[ind])))
+    matrixVec.close()
 
-            precErrors = {}
-            precErrorFts = {}
-            tpe = 0
-            tpef = 0
-            for x in cellMates[wf]:
-                assert x in GOLD_cellMates
-                if x not in GOLD_cellMates[wf]:
-                    precErrors[x] = True
-                    tpe += 1
-                    assert len(ana.wf2lem[x]) > 0
-                    for par in ana.wf2lem[x]:
-                        assert len(ana.GOLD_data[par][x]) > 0
-                        for fts in ana.GOLD_data[par][x]:
-                            fts = ';'.join(fts)
-                            if fts not in precErrorFts:
-                                precErrorFts[fts] = 0
-                            precErrorFts[fts] += 1
-                            tpef += 1
-            assert tpe <= tpef
+    return emb_dim
 
-            tre = 0
-            tref = 0
-            recErrors = {}
-            recErrorFts = {}
-            for x in GOLD_cellMates[wf]:
-                assert x in cellMates
-                if x not in cellMates[wf]:
-                    recErrors[x] = True
-                    tre += 1
-                    for par in ana.wf2lem[x]:
-                        for fts in ana.GOLD_data[par][x]:
-                            fts = ';'.join(fts)
-                            if fts not in recErrorFts:
-                                recErrorFts[fts] = 0
-                            recErrorFts[fts] += 1
-                            tref += 1
-            assert tre <= tref
+class stat_tracker:
 
-            if len(correctSet) == 0:
-                assert F == 0
-            else:
-                assert len(correctSet) + len(precErrors) == predicted
-                assert len(correctSet) + len(recErrors) == total_recall_with_Arnold_Schwarzeneggar
-
-            assert len(precErrorFts.values()) == len(precErrorFts.keys())
-            assert len(recErrorFts.values()) == len(recErrorFts.keys())
-
-            rankedPrecErrorFts = list(zip(list(precErrorFts.values()), list(precErrorFts.keys())))
-            rankedPrecErrorFts.sort(reverse=True)
-            rankedPrecErrorFts = '  '.join('{}_({})'.format(l[1], str(l[0])) for l in rankedPrecErrorFts)
-
-            rankedRecErrorFts = list(zip(list(recErrorFts.values()), list(recErrorFts.keys())))
-            rankedRecErrorFts.sort(reverse=True)
-            rankedRecErrorFts = '  '.join('{}_({})'.format(l[1], str(l[0])) for l in rankedRecErrorFts)
-
-            print('\tCORRECT:\n{}'.format(', '.join(list(correctSet))))
-            print('\tPREC ERRORS:\n{}\n{}'.format(rankedPrecErrorFts, ', '.join(list(precErrors))))
-            print('\tREC ERRORS:\n{}\n{}'.format(rankedRecErrorFts, ', '.join(list(recErrors))))
-
-        counter += increment
-        if counter > nextTen:
-            print('\t{}% complete evaluating cellMate matches'.format(str(round(counter, 0))))
-            nextTen += 10
-
-    macroF = sum(Fs)/len(Fs)
-    strMacroF = str(round(macroF, 2))
-    strMinF = str(round(minF, 2))
-    strMaxF = str(round(maxF, 2))
-    stdev = statistics.stdev(Fs)
-    strStdev = str(round(stdev, 2))
-
-    print('\n\nMacro F: {}\t(min: {}, max: {}, stdev: {}, total instances: {})'.format(strMacroF, strMinF, strMaxF, strStdev, str(total)))
-
-    return macroF
-
-def get_cellMates(array):
-
-    ### learn mapping from coordinates to forms and initialize cellMates dictionary
-    coordinates_to_forms = {}
-    forms_to_coordinates = {}
-
-    for lemma in array:
-        for wf in array[lemma]:
-            if wf not in forms_to_coordinates:
-                forms_to_coordinates[wf] = {}
-            for coord in array[lemma][wf]:
-                coord = ','.join(str(x) for x in coord)
-                forms_to_coordinates[wf][coord] = True
-                if coord not in coordinates_to_forms:
-                    coordinates_to_forms[coord] = {}
-                coordinates_to_forms[coord][wf] = True
-
-    cellMates = get_cellMates_final(coordinates_to_forms, forms_to_coordinates)
-
-    return cellMates, coordinates_to_forms, forms_to_coordinates
-
-def get_cellMates_final(cluster2wf, wf2cluster):
-
-    ### learn cellMates from coordinate-form mappings
-    cellMates = {wf:{} for wf in wf2cluster}
-
-    increment = 100/len(cluster2wf)
-    progress = 0
-    nextTen = 10
-
-    print('Getting cellMates from an array')
-    for coord in cluster2wf:
-        progress += increment
-        ### DEBUG COMPLEXITY ISSUES
-        # print('\t\t{} cell mates at {}'.format(str(len(cluster2wf[coord])**2 - len(cluster2wf[coord])), coord))
-
-        to_add = dict(cluster2wf[coord])
-        for wf1 in cluster2wf[coord]:
-            del to_add[wf1]
-            for wf2 in to_add:
-                cellMates[wf1][wf2] = True 
-                cellMates[wf2][wf1] = True
-        if progress > nextTen:
-            print('\t{}% complete getting cellMates'.format(round(progress, 3)))
-            nextTen += 10
-
-        for wf in cellMates:
-            try:
-                del cellMates[wf][wf]
-            except KeyError:
-                pass
-
-    return cellMates
-
-class fitness_tracker:
-
-    def __init__(self):
+    def __init__(self, type=float, len=0):
 
         self.size = 0
-        self.sum_sil = 0
+        self.type = type
+        if self.type == float:
+            self.sum = 0.0
+        elif self.type == 'array':
+            self.sum = np.array([0.0]*len)
 
-    def addSil(self, sil):
+    def add_instance(self, value):
 
+        if self.type == 'array':
+            value = np.array(value)
         self.size += 1
-        self.sum_sil += sil
+        self.sum += value
 
-    def multSil(self, mult, sil):
+    def mult_instance(self, instances, value):
 
-        self.size += mult
-        self.sum_sil += sil*mult
+        if self.type == 'array':
+            value = np.array(value)
+        self.size += instances
+        self.sum += value*instances
 
-    def divSil(self, quot, sil):
+    def div_instance(self, instances, value):
 
-        self.size -= quot
-        self.sum_sil -= sil*quot
+        if self.type == 'array':
+            value = np.array(value)
+        self.size -= instances
+        self.sum -= value*instances
 
-    def normSil(self):
+    def sub_instance(self, value):
 
-        self.cohesion = self.sum_sil / self.size 
-
-    def subSil(self, sil):
-
+        if self.type == 'array':
+            value = np.array(value)
         self.size -= 1
-        self.sum_sil -= sil
+        self.sum -= value
+
+    def normalize(self):
+
+        self.mean = self.sum / self.size 
 
 class continuous_range(object):
 
@@ -1298,15 +1470,65 @@ def str2bool(v):
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
-def get_MSP_from_coord(skeleton, coord):
+def get_MSP_from_cell(skeleton, cell, option='string'):
 
         ftList = []
-        coord = list(int(x) for x in coord.split(','))
+        coord = list(int(x) for x in cell.split(','))
+
         for dimInd in range(len(coord)):
             featInd = coord[dimInd]
             if featInd != 0:
-                ftList.append(skeleton[dimInd][featInd])
-        return ';'.join(ftList)
+
+                if option in ['string', 'stringList']:
+                    ftList.append(skeleton[dimInd][featInd])
+                elif option == 'list':
+                    ftList.append([featInd])
+                else:
+                    print('DID NOT RECOGNIZE MSP REPRESENTATION FORMAT {}'.format(option))
+                    exit()
+        if option == 'string':
+            ftList = ';'.join(ftList)
+
+        return ftList
+
+def evalFull(gold_cell_wf, cell_wf):
+
+        numer = 0
+        denom = 0
+        minF = 101
+        maxF = -1
+
+        for cell in gold_cell_wf:
+
+            predicted = set(cell_wf[cell])
+            actual = set(gold_cell_wf[cell])
+            correct = predicted.intersection(actual)
+
+            if len(correct) == 0:
+                F = 0
+            else:
+                prec = len(correct) / len(predicted)
+                rec = len(correct) / len(actual)
+                F = 100 * ( (2 * prec * rec) / (prec + rec) )
+
+            weight = len(actual)
+
+            if F < minF:
+                minF = F 
+            if F > maxF:
+                maxF = F
+
+            numer += weight * F 
+            denom += weight
+
+        macroF = numer / denom
+        strMacroF = str(round(macroF, 3))
+        strMinF = str(round(minF, 3))
+        strMaxF = str(round(maxF, 3))
+
+        print('\n\nMacro F: {}\t(min: {}, max: {}, total cells: {})'.format(strMacroF, strMinF, strMaxF, str(len(cell_wf))))
+
+        return macroF
 
 
 ###################################################################################
@@ -1316,16 +1538,27 @@ if __name__ == '__main__':
     parser.add_argument('-u', '--unimorph', type=str, help='Location of Unimorph file', required=True)
     parser.add_argument('-e', '--embeddings', type=str, help='Location of word embeddings', required=False, default=None)
     parser.add_argument('-l', '--limit', type=str, help='Shall we draw a sample of the full unimorph data? You can limit it by number of instances or by shared feature.', required=False, default=None)
-    parser.add_argument('-d', '--distance_function', type=str, choices=['interpolated', 'weightedLev', 'lev', 'cosine', 'random'], help='Metric that determines the relevant distance matrix used for cell clustering', required=False, default='interpolated')
-    parser.add_argument('-x', '--d1', type=str, choices=['weightedLev', 'lev', 'cosine'], help='First metric considered in the interpolated distance function', required=False, default='weightedLev')
-    parser.add_argument('-y', '--d2', type=str, choices=['weightedLev', 'lev', 'cosine'], help='Second metric considered in the interpolated distance function', required=False, default='cosine')
+    parser.add_argument('-d', '--distance_function', type=str, choices=['interpolated', 'weightedLev', 'lev', 'cosine', 'cosine_par'], help='Metric that determines the relevant distance matrix used for cell clustering', required=False, default='interpolated')
+    parser.add_argument('-x', '--d1', type=str, choices=['weightedLev', 'lev', 'cosine', 'cosine_par'], help='First metric considered in the interpolated distance function', required=False, default='weightedLev')
+    parser.add_argument('-y', '--d2', type=str, choices=['weightedLev', 'lev', 'cosine', 'cosine_par'], help='Second metric considered in the interpolated distance function', required=False, default='cosine')
     parser.add_argument('-a', '--alpha', type=float, choices=[continuous_range(0.0, 1.0)], help='Relative weight placed on d1 for the interpolated distance metric', required=False, default=0.5)
-    parser.add_argument('-m', '--debugMedoids', type=str2bool, help='Show medoids during clustering for debugging/development purposes', required=False, default=False)
-    parser.add_argument('-c', '--debugCells', type=str2bool, help='Show cells during clustering for debugging/development purposes', required=False, default=False)
+    parser.add_argument('-n', '--topn', type=int, help='Top n nearest neighbors to look for cell mates in', required=False, default=1)
+    parser.add_argument('-b', '--bias_against_overabundance', type=float, help='Bias against overabundance', required=False, default=1)
+    parser.add_argument('-m', '--debugCellMates', type=str2bool, help='Show cellMates by word form during evaluation for debugging/development purposes', required=False, default=False)
+    parser.add_argument('-C', '--debugClusters', type=str2bool, help='Show gold features present in each cluster during kmeans clustering for debugging/development purposes', required=False, default=False)
+    parser.add_argument('-c', '--debugCells', type=str2bool, help='Show gold features present in each cell during assignment for debugging/development purposes', required=False, default=False)
+    parser.add_argument('-g', '--gpu', type=str2bool, help='Show gold features present in each cell during assignment for debugging/development purposes', required=False, default=True)
+    parser.add_argument('-s', '--strategy', type=str, help='How to choose cell mates and/or perform cell assignment', required=False, choices=['random', 'kmeans', 'kmedoids', 'map_voc-cell', 'kmeans_map'], default='kmeans')
+
     args = parser.parse_args()
 
 
     UNIMORPH_LG = args.unimorph
+    LG = os.path.basename(UNIMORPH_LG)
+    if args.bias_against_overabundance == 1:
+        EXP_ID = '{}_{}-{}-{}'.format(args.distance_function, str(args.d1), str(args.d2), str(args.alpha))
+    else:
+        EXP_ID = '{}_{}-{}-{}-bias{}'.format(args.distance_function, str(args.d1), str(args.d2), str(args.alpha), str(args.bias_against_overabundance))
 
     ########################### READ IN DATA ######################################
     ### read in file, get UG, Gold, plain (Gold without tags) data/array/skeletons
@@ -1335,33 +1568,63 @@ if __name__ == '__main__':
         print_sample_paradigms(ana, args.limit, '{}.sample-{}'.format(UNIMORPH_LG, args.limit))
 
     ## get all possible array coordinates and word classes according to Gold
-    ana.get_attested_coordinates()    # in ara, 196 attested coordinates, 19 word classes
+    ana.get_attested_cells()    # in ara, 196 attested coordinates, 19 word classes
                                     # in deu,  37 attested coordinates,  9 word classes
 
+
     ########################### INITIALIZATION ######################################
-    ### k-medoid cluster cells based on these (potentially interpolated) metrics:
+    ### Assign cells based on these (potentially interpolated) metrics:
         # random, weighted Lev ED, Lev ED, and/or cosine similarity
-    ana.learn_exponence_weights()
-    if args.distance_function == 'random':
-        cellMates = ana.assignCellMates_random()
-    else:
-        cellMates, dist_matrix, args.embeddings = ana.cluster_cell_medoids(args.distance_function, D1=args.d1, D2=args.d2, embeddings=args.embeddings, debug=args.debugMedoids, alpha=args.alpha) # debug will show cell medoids
 
-    ################## MEDOID TO CELL MAPPING AND WF RE-ASSIGNMENT ##################
+    ana.learn_exponence_weights(bias_against_overabundance=args.bias_against_overabundance)
 
-    cellMates, cellF_rand, cellF_swappedMedoids = ana.cell_mapping_and_word_reassignment(dist_matrix)
+    oracle_assF = None
+    ### RANDOM CELL ASSIGNMENT ###
+    if args.strategy == 'random':
+        ana.assignCells_random()
+    #############################
+
+    ### CLUSTERING BY KMEANS ###
+    elif args.strategy == 'kmeans':
+        ana.get_clusters(args.distance_function, debug=args.debugClusters, embeddings=args.embeddings, D1=args.d1, D2=args.d2, alpha=args.alpha, bias=args.bias_against_overabundance)
+        ana.assignMedoid_random(mORc='cluster')
+        ana.get_cellMates()
+        oracle_assF = ana.assignMedoid_oracle(mORc='cluster')
+    #############################
+
+    ### CLUSTERING BY MEDOID ###
+    elif args.strategy == 'kmedoids':
+        ana.get_medoids(args.distance_function, debug=False, embeddings=args.embeddings, D1=args.d1, D2=args.d2, alpha=args.alpha, bias=args.bias_against_overabundance)
+        ana.assignMedoid_random()
+        ana.get_cellMates()
+        oracle_assF = ana.assignMedoid_oracle()
+    #############################
+
+    ### MAPPING POSITIONAL VOCAB INTO POSITIONAL CELL EMBEDDINGS
+    elif args.strategy == 'map_voc-cell':
+        ana.assignCells_DMmap(args.distance_function, D1=args.d1, D2=args.d2, embeddings=args.embeddings, debug=args.debugCells, alpha=args.alpha, bias=args.bias_against_overabundance, gpu=args.gpu) # debug will show feats and wf's of proposed cells
+    #############################
+
+    ### CONSIDER BOTH KMEANS CLUSTERING AND VOCAB-TO-CELL MAP WHEN CHOOSING CELLMATES ###
+    elif args.strategy == 'kmeans_map':
+        ana.assignCells_clusterMapHybrid(args.distance_function, D1=args.d1, D2=args.d2, embeddings=args.embeddings, debugCells=args.debugCells, debugClusters=args.debugClusters, alpha=args.alpha, bias=args.bias_against_overabundance, gpu=args.gpu, topn=args.topn) # debug will show feats and wf's of proposed cells
+    #############################
+
+
 
     ############################### EVALUATION ######################################
-    GOLD_cellMates, GOLD_coordinates_to_forms, GOLD_forms_to_coordinates = get_cellMates(ana.GOLD_array) # pickle these
-    macroF = eval(GOLD_cellMates, cellMates, ana, debug=args.debugCells) # debug shows wf's F,p,r, and cellMates
-
-    ### Secondary evaluation on cell prediction
-    # ana.get_cell_wf()
-    # cellF_swappedMedoids = ana.evalFull()
+    ### Evaluate cell mates
+    macroF = ana.eval(debug=args.debugCellMates) # debug shows wf's F,p,r, and cellMates
+    ### Secondary evaluation on cell assignment
+    cell_macroF = ana.evalFull(debug=args.debugCells)
 
 
-    print('F-score cell assignment improves from {} to {} after medoid swapping'.format(str(round(cellF_rand, 3)), str(round(cellF_swappedMedoids, 3))))
-    print('\nF-score cell mate clustering (without concern for correct cell assignment): {}'.format(str(round(macroF, 3))))
+    ##################################### SUMMARY #####################################
+    print('\n\nCell Mate Prediction Per Word Macro F-score: {}'.format(str(round(macroF, 2))))
+    print('Cell Assignment Per Cell Macro F-score: {}'.format(str(round(cell_macroF, 2))))
+    # if cluster by medoid
+    if oracle_assF != None:
+        print('Oracle Cell Assignment Per Cell Macro F-score {}'.format(str(round(oracle_assF, 2))))
 
 
 
